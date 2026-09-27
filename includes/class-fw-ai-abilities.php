@@ -225,6 +225,139 @@ class FW_AI_Abilities {
 			'annotations'         => $read,
 		) );
 
+		/* ---------------- Site design (Theme Settings, presets, templates, conversion) ---------------- */
+
+		self::ability( 'describe-theme-settings', 'unysonplus-site', array(
+			'label'               => __( 'Describe Theme Settings', 'fw' ),
+			'description'         => __( 'Without an id: the index of every Theme Settings option (id, type, label) grouped by section (General › Layout, Components › Buttons, Header › Main Header …); `search` filters it. With an id: that option\'s full schema (inner options, choices, defaults) and its current value. Read this before update_theme_settings.', 'fw' ),
+			'input_schema'        => self::schema( array(
+				'id'     => array( 'type' => 'string' ),
+				'search' => array( 'type' => 'string' ),
+			) ),
+			'permission_callback' => self::cap( 'edit_theme_options' ),
+			'execute_callback'    => function ( $in ) {
+				return FW_AI_Settings::describe( (string) ( $in['id'] ?? '' ), (string) ( $in['search'] ?? '' ) );
+			},
+			'annotations'         => $read,
+		) );
+
+		self::ability( 'update-theme-settings', 'unysonplus-build', array(
+			'label'               => __( 'Update Theme Settings', 'fw' ),
+			'description'         => __( 'Changes site-wide Theme Settings — colours, typography, layout, header, footer … — given as { values: { <setting id>: <value> } }. Object values are MERGED into the current value (send only the keys you change; lists are replaced whole) unless merge is false. Validated against the settings schema; the previous values are saved so undo_theme_settings can restore them. Changes are LIVE on the site immediately. Settings the person edited by hand since the converter or the AI last wrote them are SKIPPED (listed under skipped) — ask them, then retry with force: true. For button / box / section styles use save_preset.', 'fw' ),
+			'input_schema'        => self::schema( array(
+				'values' => array( 'type' => 'object' ),
+				'merge'  => array( 'type' => 'boolean', 'default' => true ),
+				'force'  => array( 'type' => 'boolean', 'default' => false, 'description' => 'Also change settings the person edited by hand (reported under skipped otherwise). Only after they agree.' ),
+			), array( 'values' ) ),
+			'permission_callback' => self::cap( 'edit_theme_options' ),
+			'execute_callback'    => function ( $in ) {
+				return FW_AI_Settings::update( (array) $in['values'], ! isset( $in['merge'] ) || $in['merge'], 'unysonplus/update-theme-settings', '', ! empty( $in['force'] ) );
+			},
+			'annotations'         => array( 'readonly' => false, 'destructive' => false, 'idempotent' => true ),
+		) );
+
+		self::ability( 'save-preset', 'unysonplus-build', array(
+			'label'               => __( 'Create or update a design preset', 'fw' ),
+			'description'         => __( 'Creates or updates ONE named preset in a Theme Settings preset list — type is the list id from list_presets (button_colors, button_sizes, border_presets (box presets), section_style_presets, theme_colors, typography_presets). values are merged into the existing preset of that name, or into a copy of the first preset for a new one; call describe_theme_settings with the type as id to see a preset\'s fields. Elements then use the preset by name, so every element wearing it changes together.', 'fw' ),
+			'input_schema'        => self::schema( array(
+				'type'   => array( 'type' => 'string' ),
+				'name'   => array( 'type' => 'string', 'minLength' => 1 ),
+				'values' => array( 'type' => 'object', 'default' => array() ),
+				'force'  => array( 'type' => 'boolean', 'default' => false ),
+			), array( 'type', 'name' ) ),
+			'permission_callback' => self::cap( 'edit_theme_options' ),
+			'execute_callback'    => function ( $in ) {
+				return FW_AI_Settings::save_preset( (string) $in['type'], (string) $in['name'], (array) ( $in['values'] ?? array() ), ! empty( $in['force'] ) );
+			},
+			'annotations'         => array( 'readonly' => false, 'destructive' => false, 'idempotent' => true ),
+		) );
+
+		self::ability( 'list-templates', 'unysonplus-site', array(
+			'label'               => __( 'List templates', 'fw' ),
+			'description'         => __( 'Premade page-builder templates: the Template Library (bundled, installed, or available to install) and templates saved in this site. kind is full (a whole page), section or column. Use apply_template to put one on a page.', 'fw' ),
+			'input_schema'        => self::schema( array(
+				'kind'   => array( 'type' => 'string', 'enum' => array( 'full', 'section', 'column' ) ),
+				'search' => array( 'type' => 'string' ),
+			) ),
+			'permission_callback' => self::cap( 'edit_posts' ),
+			'execute_callback'    => function ( $in ) {
+				return array( 'templates' => FW_AI_Build::list_templates( (string) ( $in['kind'] ?? '' ), (string) ( $in['search'] ?? '' ) ) );
+			},
+			'annotations'         => $read,
+		) );
+
+		self::ability( 'apply-template', 'unysonplus-build', array(
+			'label'               => __( 'Apply a template', 'fw' ),
+			'description'         => __( 'Inserts a template (id from list_templates) into a page — at the root, or inside parent_path for a column template — at position (default: the end). A full-page template can instead replace the whole page with replace: true. Library templates not yet downloaded are installed first (administrators). Replace the template\'s placeholder text and images afterwards. A revision is saved first.', 'fw' ),
+			'input_schema'        => self::schema( array(
+				'post_id'     => array( 'type' => 'integer' ),
+				'template_id' => array( 'type' => 'string' ),
+				'parent_path' => array( 'type' => 'string' ),
+				'position'    => array( 'type' => 'integer', 'minimum' => 0 ),
+				'replace'     => array( 'type' => 'boolean', 'default' => false ),
+			), array( 'post_id', 'template_id' ) ),
+			'permission_callback' => self::post_cap( 'edit_post' ),
+			'execute_callback'    => array( 'FW_AI_Build', 'apply_template' ),
+			'annotations'         => array( 'readonly' => false, 'destructive' => false, 'idempotent' => false ),
+		) );
+
+		self::ability( 'convert-url', 'unysonplus-build', array(
+			'label'               => __( 'Convert a website into this site', 'fw' ),
+			'description'         => __( 'Runs the Site Converter on a URL: generates and ACTIVATES a child theme with the source\'s design, writes Theme Settings, and creates or REPLACES pages with the same slugs (it can also set the front page). Uses the capture service for a full browser render when it is running. Never run it without the user\'s explicit agreement: the first call without confirm: true only explains the impact; dry_run: true tests the pipeline without changing the site.', 'fw' ),
+			'input_schema'        => self::schema( array(
+				'url'     => array( 'type' => 'string' ),
+				'confirm' => array( 'type' => 'boolean', 'default' => false ),
+				'dry_run' => array( 'type' => 'boolean', 'default' => false ),
+			), array( 'url' ) ),
+			'permission_callback' => function () {
+				return current_user_can( 'manage_options' ) && current_user_can( 'switch_themes' );
+			},
+			'execute_callback'    => array( 'FW_AI_Build', 'convert_url' ),
+			'annotations'         => array( 'readonly' => false, 'destructive' => true, 'idempotent' => false ),
+		) );
+
+		self::ability( 'list-settings-revisions', 'unysonplus-undo', array(
+			'label'               => __( 'List Theme Settings revisions', 'fw' ),
+			'description'         => __( 'The Theme Settings values saved before each AI change, newest first (the newest 20 are kept).', 'fw' ),
+			'permission_callback' => self::cap( 'edit_theme_options' ),
+			'execute_callback'    => function () {
+				return array( 'revisions' => FW_AI_Settings::list_revisions() );
+			},
+			'annotations'         => $read,
+		) );
+
+		self::ability( 'undo-theme-settings', 'unysonplus-undo', array(
+			'label'               => __( 'Undo a Theme Settings change', 'fw' ),
+			'description'         => __( 'Restores the Theme Settings an AI change touched to their previous values — the newest change by default, or revision_id. The current values are saved first, so the undo can itself be undone.', 'fw' ),
+			'input_schema'        => self::schema( array( 'revision_id' => array( 'type' => 'integer' ) ) ),
+			'permission_callback' => self::cap( 'edit_theme_options' ),
+			'execute_callback'    => function ( $in ) {
+				return FW_AI_Settings::undo( isset( $in['revision_id'] ) ? (int) $in['revision_id'] : null );
+			},
+			'annotations'         => array( 'readonly' => false, 'destructive' => false, 'idempotent' => false ),
+		) );
+
+		self::ability( 'list-changes', 'unysonplus-undo', array(
+			'label'               => __( 'List other AI changes', 'fw' ),
+			'description'         => __( 'Changes made through abilities other extensions add (SEO, Theme Builder …), newest first, each undoable with undo_change. Page content uses list_revisions; Theme Settings use list_settings_revisions.', 'fw' ),
+			'permission_callback' => self::cap( 'edit_posts' ),
+			'execute_callback'    => function () {
+				return array( 'changes' => FW_AI_Toolkit::list_changes() );
+			},
+			'annotations'         => $read,
+		) );
+
+		self::ability( 'undo-change', 'unysonplus-undo', array(
+			'label'               => __( 'Undo another AI change', 'fw' ),
+			'description'         => __( 'Restores what an extension ability changed (the newest change by default, or revision_id from list_changes / the ability\'s undo_revision_id). The current values are saved first, so it can itself be undone.', 'fw' ),
+			'input_schema'        => self::schema( array( 'revision_id' => array( 'type' => 'integer' ) ) ),
+			'permission_callback' => self::cap( 'edit_posts' ),
+			'execute_callback'    => function ( $in ) {
+				return FW_AI_Toolkit::restore( isset( $in['revision_id'] ) ? (int) $in['revision_id'] : null );
+			},
+			'annotations'         => array( 'readonly' => false, 'destructive' => false, 'idempotent' => false ),
+		) );
+
 		self::ability( 'list-revisions', 'unysonplus-undo', array(
 			'label'               => __( 'List AI revisions', 'fw' ),
 			'description'         => __( 'The revisions saved before each AI change to a page, newest first (the newest 20 are kept).', 'fw' ),
@@ -359,6 +492,9 @@ class FW_AI_Abilities {
 			'wordpress'          => get_bloginfo( 'version' ),
 			'theme'              => $theme->get( 'Name' ) . ' ' . $theme->get( 'Version' ),
 			'parent_theme'       => $theme->parent() ? $theme->parent()->get( 'Name' ) : null,
+			'child_theme_note'   => $theme->parent()
+				? 'The active theme is a child theme. Its own stylesheet can override Theme Settings (fonts, colours, header/footer styling) — after changing those, check the rendered page, and tell the user if the child theme overrides them.'
+				: null,
 			'unysonplus'         => defined( 'FW_VERSION' ) ? FW_VERSION : ( function_exists( 'fw' ) ? fw()->manifest->get_version() : '' ),
 			'active_extensions'  => $active,
 			'builder_post_types' => $types,

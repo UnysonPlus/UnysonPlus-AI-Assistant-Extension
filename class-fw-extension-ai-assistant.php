@@ -18,6 +18,9 @@
  *   includes/class-fw-ai-check.php     render-check
  *   includes/class-fw-ai-local.php     local command-line agent runner (development hosts)
  *   includes/class-fw-ai-visitor.php   the Chat extension's AI channel for visitors
+ *   includes/class-fw-ai-settings.php  Theme Settings: describe, update, presets, undo
+ *   includes/class-fw-ai-build.php     templates + whole-site conversion
+ *   includes/class-fw-ai-toolkit.php   fw_ai_register_ability() / fw_ai_snapshot() for other extensions
  *   static/                            the panel's JS + CSS
  *   views/page.php                     Unyson+ → AI Assistant (status, MCP access, connect an agent)
  *
@@ -62,12 +65,16 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		require_once $this->get_path( '/includes/class-fw-ai-check.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-local.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-visitor.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-settings.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-build.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-toolkit.php' );
 
 		add_action( 'wp_abilities_api_categories_init', array( 'FW_AI_Abilities', 'register_categories' ) );
 		add_action( 'wp_abilities_api_init', array( 'FW_AI_Abilities', 'register' ) );
 		FW_AI_MCP::init();
 		FW_AI_Panel::init();
 		FW_AI_Visitor::init();
+		FW_AI_Toolkit::init();
 	}
 
 	/**
@@ -163,7 +170,10 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 				'header'   => 'Basic ' . base64_encode( $user->user_login . ':' . str_replace( ' ', '', $password ) ),
 			);
 			if ( FW_AI_MCP::mode() === 'off' ) {
-				$this->notices[] = array( 'warning', __( 'Connection password created — but MCP access is Off, so agents will be refused until you set it to Read-only or Read & write below.', 'fw' ) );
+				// Creating a connection is a clear "I want an agent to connect": turn access on rather than
+				// leaving a password that is refused with a 403 (Read-only is one click away below).
+				update_option( FW_AI_MCP::OPTION_MODE, 'write', false );
+				$this->notices[] = array( 'success', __( 'Connection created, and MCP access switched on (Read & write) so the agent can connect. Change it to Read-only below if the agent should only look.', 'fw' ) );
 			}
 			return;
 		}

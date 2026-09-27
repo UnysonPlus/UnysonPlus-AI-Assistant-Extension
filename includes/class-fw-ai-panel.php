@@ -19,7 +19,13 @@
  *           session's tree the same way, and the panel polls for the result.
  *
  *   POST /wp-json/unysonplus-ai/v1/panel/run      { post_id, tree, message, history[] }
+ *   POST /wp-json/unysonplus-ai/v1/site/run       { message, history[] }   (site-wide assistant)
  *   GET  /wp-json/unysonplus-ai/v1/panel/status   ?session=…     (local backend only)
+ *
+ * The SITE-WIDE assistant (an ✦ AI Assistant item in the admin bar, on every admin screen that is
+ * not a builder screen) has every unysonplus ability — Theme Settings, presets, new pages, templates,
+ * URL conversion — and works on the real site, not a sandbox: pages it creates are drafts, Theme
+ * Settings changes are live and undoable. Each successful write is reported back as a step with a link.
  */
 class FW_AI_Panel {
 
@@ -33,11 +39,26 @@ class FW_AI_Panel {
 	/** Abilities the panel may use (no create-page / revisions: undo is the builder's own history). */
 	const TOOLS = array(
 		'site-info', 'list-elements', 'describe-element', 'get-page', 'list-presets',
-		'search-content', 'get-content', 'render-check', 'insert-items', 'update-element', 'move-element', 'remove-element',
+		'search-content', 'get-content', 'render-check', 'list-templates', 'apply-template', 'insert-items', 'update-element', 'move-element', 'remove-element',
 	);
+
+	/**
+	 * The builder panel's tool slugs: its own plus those extensions registered with 'panel' => true.
+	 *
+	 * @return string[]
+	 */
+	public static function page_tools() {
+		wp_get_abilities(); // Make sure extension abilities are registered.
+		return array_values( array_unique( array_merge( self::TOOLS, FW_AI_Toolkit::panel_tools() ) ) );
+	}
+
+	/** @var array[] Successful unysonplus writes during this request: { ability, note, url }. */
+	private static $activity = array();
 
 	public static function init() {
 		add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) );
+		add_action( 'wp_after_execute_ability', array( __CLASS__, 'record_activity' ), 10, 3 );
+		add_action( 'admin_bar_menu', array( __CLASS__, 'admin_bar' ), 95 );
 		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue_admin' ) );
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_live_editor' ), 50 );
 	}
@@ -88,6 +109,51 @@ class FW_AI_Panel {
 	}
 
 	/* ------------------------------------------------------------------ *
+	 * Activity (what the site-wide assistant changed)
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * `wp_after_execute_ability`: remember each successful unysonplus WRITE, with a link to what it
+	 * changed, so the reply can list it.
+	 *
+	 * @param string $name
+	 * @param mixed  $input
+	 * @param mixed  $result
+	 */
+	public static function record_activity( $name, $input, $result ) {
+		if ( strpos( (string) $name, 'unysonplus/' ) !== 0 || is_wp_error( $result ) ) {
+			return;
+		}
+		$ability = wp_get_ability( $name );
+		$ann     = $ability ? (array) $ability->get_meta_item( 'annotations', array() ) : array();
+		if ( ! empty( $ann['readonly'] ) ) {
+			return;
+		}
+		$note = is_array( $result ) && ! empty( $result['message'] ) ? (string) $result['message'] : ( $ability ? $ability->get_label() : $name );
+		$url  = '';
+		if ( is_array( $result ) && ! empty( $result['post_id'] ) ) {
+			$url = (string) get_edit_post_link( (int) $result['post_id'], 'raw' );
+			$note .= ' — ' . get_the_title( (int) $result['post_id'] );
+		} elseif ( is_array( $result ) && ( isset( $result['changed'] ) || isset( $result['preset'] ) || isset( $result['restored'] ) ) ) {
+			$url = admin_url( 'admin.php?page=fw-settings' );
+		}
+		self::$activity[] = array(
+			'ability' => (string) $name,
+			'note'    => wp_html_excerpt( wp_strip_all_tags( $note ), 200, '…' ),
+			'url'     => $url,
+		);
+	}
+
+	/**
+	 * @return array[] The activity log (and clears it).
+	 */
+	public static function take_activity() {
+		$a              = self::$activity;
+		self::$activity = array();
+		return $a;
+	}
+
+	/* ------------------------------------------------------------------ *
 	 * Assets
 	 * ------------------------------------------------------------------ */
 
@@ -95,14 +161,33 @@ class FW_AI_Panel {
 	 * @param string $hook
 	 */
 	public static function enqueue_admin( $hook ) {
-		if ( ! in_array( $hook, array( 'post.php', 'post-new.php' ), true ) ) {
+		if ( in_array( $hook, array( 'post.php', 'post-new.php' ), true ) ) {
+			$post = get_post();
+			if ( $post && current_user_can( 'edit_post', $post->ID ) && self::builder_type( $post->post_type ) ) {
+				self::enqueue( $post->ID, 'builder' );
+				return;
+			}
+		}
+		if ( current_user_can( 'edit_pages' ) && get_option( self::OPTION_BACKEND, 'auto' ) !== 'off' ) {
+			self::enqueue( 0, 'site' );
+		}
+	}
+
+	/**
+	 * An ✦ AI Assistant item in the admin bar (every admin screen) that opens the panel.
+	 *
+	 * @param WP_Admin_Bar $bar
+	 */
+	public static function admin_bar( $bar ) {
+		if ( ! is_admin() || ! current_user_can( 'edit_pages' ) || get_option( self::OPTION_BACKEND, 'auto' ) === 'off' ) {
 			return;
 		}
-		$post = get_post();
-		if ( ! $post || ! current_user_can( 'edit_post', $post->ID ) || ! self::builder_type( $post->post_type ) ) {
-			return;
-		}
-		self::enqueue( $post->ID, 'builder' );
+		$bar->add_node( array(
+			'id'    => 'upw-ai-assistant',
+			'title' => '<span class="ab-icon" aria-hidden="true" style="font-size:16px;line-height:1.9">✦</span><span class="ab-label">' . esc_html__( 'AI Assistant', 'fw' ) . '</span>',
+			'href'  => '#',
+			'meta'  => array( 'title' => __( 'Ask the AI Assistant (Beta)', 'fw' ) ),
+		) );
 	}
 
 	/**
@@ -134,7 +219,7 @@ class FW_AI_Panel {
 			'host'     => $host,
 			'postId'   => (int) $post_id,
 			'backend'  => $backend,
-			'runUrl'   => rest_url( FW_AI_MCP::REST_NS . '/panel/run' ),
+			'runUrl'   => rest_url( FW_AI_MCP::REST_NS . ( $host === 'site' ? '/site/run' : '/panel/run' ) ),
 			'pollUrl'  => rest_url( FW_AI_MCP::REST_NS . '/panel/status' ),
 			'nonce'    => wp_create_nonce( 'wp_rest' ),
 			'setupUrl' => FW_Extension_AI_Assistant::get_page_url(),
@@ -159,6 +244,18 @@ class FW_AI_Panel {
 				),
 				'stale'       => __( 'The page changed while the assistant was working, so its result was not applied. Please ask again.', 'fw' ),
 				'check'       => __( 'Page check:', 'fw' ),
+				'change'      => __( 'change', 'fw' ),
+				'changes'     => __( 'changes', 'fw' ),
+				'siteTitle'   => __( 'AI Assistant — whole site', 'fw' ),
+				'sitePlaceholder' => __( 'Ask for anything on your site — e.g. "Create a draft About page with our story and team"', 'fw' ),
+				'siteStarters'    => array(
+					__( 'Create a draft About page with our story, values and team', 'fw' ),
+					__( 'Give the site a warm colour palette and friendly fonts', 'fw' ),
+					__( 'Add a rounded "Pill" button style and use it for calls to action', 'fw' ),
+				),
+				'siteDone'    => __( 'Done. New pages stay drafts until you publish them; Theme Settings changes are live — ask me to undo them if needed.', 'fw' ),
+				'siteNoChange' => __( 'Nothing on the site was changed.', 'fw' ),
+				'open_link'   => __( 'Open', 'fw' ),
 			),
 		) );
 	}
@@ -194,6 +291,17 @@ class FW_AI_Panel {
 				'history' => array( 'type' => 'array', 'default' => array() ),
 			),
 		) );
+		register_rest_route( FW_AI_MCP::REST_NS, '/site/run', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'rest_site_run' ),
+			'permission_callback' => function () {
+				return current_user_can( 'edit_pages' );
+			},
+			'args'                => array(
+				'message' => array( 'type' => 'string', 'required' => true ),
+				'history' => array( 'type' => 'array', 'default' => array() ),
+			),
+		) );
 		register_rest_route( FW_AI_MCP::REST_NS, '/panel/status', array(
 			'methods'             => 'GET',
 			'callback'            => array( __CLASS__, 'rest_status' ),
@@ -226,6 +334,70 @@ class FW_AI_Panel {
 				return rest_ensure_response( self::start_local( $post_id, $tree, $message, $history ) );
 		}
 		return new WP_Error( 'upw_ai_no_backend', 'No AI model is connected. Add a provider key under Settings → Connectors, or configure an agent on the AI Assistant screen.', array( 'status' => 503 ) );
+	}
+
+	/**
+	 * The site-wide assistant.
+	 *
+	 * @param WP_REST_Request $r
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function rest_site_run( WP_REST_Request $r ) {
+		$message = trim( (string) $r->get_param( 'message' ) );
+		$history = self::clean_history( (array) $r->get_param( 'history' ) );
+		if ( $message === '' ) {
+			return new WP_Error( 'upw_ai_empty', 'Empty message.', array( 'status' => 400 ) );
+		}
+		switch ( self::backend() ) {
+			case 'wp':
+				self::take_activity();
+				$reply = self::run_loop( self::site_abilities(), self::site_instructions(), $history, $message );
+				if ( is_wp_error( $reply ) ) {
+					return $reply;
+				}
+				$steps = self::take_activity();
+				return rest_ensure_response( array(
+					'status'  => 'done',
+					'reply'   => $reply !== '' ? $reply : ( $steps ? 'Done.' : 'I could not finish that — please try rephrasing.' ),
+					'changed' => (bool) $steps,
+					'steps'   => $steps,
+				) );
+			case 'local':
+				return rest_ensure_response( self::start_local( 0, array(), $message, $history, 'site' ) );
+		}
+		return new WP_Error( 'upw_ai_no_backend', 'No AI model is connected. Add a provider key under Settings → Connectors, or configure an agent on the AI Assistant screen.', array( 'status' => 503 ) );
+	}
+
+	/**
+	 * Every unysonplus ability, for the site-wide assistant.
+	 *
+	 * @return string[]
+	 */
+	public static function site_abilities() {
+		$out = array();
+		foreach ( wp_get_abilities() as $a ) {
+			if ( strpos( $a->get_name(), 'unysonplus/' ) === 0 ) {
+				$out[] = $a->get_name();
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * @return string
+	 */
+	private static function site_instructions() {
+		$user = wp_get_current_user();
+		return implode( "\n", array(
+			'You are the UnysonPlus AI Assistant for the WordPress site "' . wp_strip_all_tags( get_bloginfo( 'name' ) ) . '" (' . home_url( '/' ) . '), talking to ' . $user->display_name . ' inside the WordPress admin.',
+			'You can read and change the whole site through the unysonplus tools: Theme Settings, design presets, pages, templates. Start with site_info.',
+			'Work outside-in when building: the design system first (describe_theme_settings, update_theme_settings, save_preset), then pages (create_page, apply_template or insert_items section by section), then render_check each page you built and fix what it reports.',
+			'Before placing an element, call describe_element and use its exact option ids — for list options, only the inner_options keys.',
+			'New pages are drafts unless the person asks you to publish. Theme Settings changes are LIVE immediately; mention that, and that undo_theme_settings can revert them.',
+			'Ask before anything destructive: removing content they wrote, replacing a page, or convert_url (which replaces pages and activates a new child theme) — only call convert_url with confirm: true after they explicitly agree in this conversation.',
+			'If a request is ambiguous, make sensible choices and say what you chose rather than asking many questions.',
+			'When done, reply in a few short sentences: what you changed, and anything they should check or do next.',
+		) );
 	}
 
 	/**
@@ -289,8 +461,38 @@ class FW_AI_Panel {
 		FW_AI_Store::take_log();
 
 		$abilities = array();
-		foreach ( self::TOOLS as $slug ) {
+		foreach ( self::page_tools() as $slug ) {
 			$abilities[] = 'unysonplus/' . $slug;
+		}
+		$reply = self::run_loop( $abilities, self::instructions( $post_id, $tree ), $history, $message );
+		if ( is_wp_error( $reply ) ) {
+			return $reply;
+		}
+
+		$steps = FW_AI_Store::take_log();
+		$check = $steps ? FW_AI_Check::run( $post_id ) : null;
+		return array(
+			'check'   => $check,
+			'status'  => 'done',
+			'reply'   => $reply !== '' ? $reply : ( $steps ? 'Done.' : 'I could not finish that — please try rephrasing.' ),
+			'changed' => (bool) $steps,
+			'tree'    => $steps ? FW_AI_Store::get_tree( $post_id ) : null,
+			'steps'   => $steps,
+		);
+	}
+
+	/**
+	 * The WordPress AI Client tool loop.
+	 *
+	 * @param string[] $abilities Ability names the model may call.
+	 * @param string   $system
+	 * @param array    $history
+	 * @param string   $message
+	 * @return string|WP_Error The final reply text.
+	 */
+	private static function run_loop( array $abilities, $system, array $history, $message ) {
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 600 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		}
 		$resolver = new WP_AI_Client_Ability_Function_Resolver( ...$abilities );
 
@@ -303,9 +505,8 @@ class FW_AI_Panel {
 		}
 		$messages[] = new \WordPress\AiClient\Messages\DTO\UserMessage( array( new \WordPress\AiClient\Messages\DTO\MessagePart( $message ) ) );
 
-		$system = self::instructions( $post_id, $tree );
-		$reply  = '';
-		for ( $round = 0; $round < self::MAX_ROUNDS; $round++ ) {
+		$reply = '';
+		for ( $round = 0; $round < self::MAX_ROUNDS * 2; $round++ ) {
 			$result = wp_ai_client_prompt( $messages )
 				->using_system_instruction( $system )
 				->using_abilities( ...$abilities )
@@ -327,17 +528,7 @@ class FW_AI_Panel {
 			}
 			break;
 		}
-
-		$steps = FW_AI_Store::take_log();
-		$check = $steps ? FW_AI_Check::run( $post_id ) : null;
-		return array(
-			'check'   => $check,
-			'status'  => 'done',
-			'reply'   => trim( $reply ) !== '' ? trim( $reply ) : ( $steps ? 'Done.' : 'I could not finish that — please try rephrasing.' ),
-			'changed' => (bool) $steps,
-			'tree'    => $steps ? FW_AI_Store::get_tree( $post_id ) : null,
-			'steps'   => $steps,
-		);
+		return trim( $reply );
 	}
 
 	/* ------------------------------------------------------------------ *
@@ -351,10 +542,10 @@ class FW_AI_Panel {
 	 * @param array  $history
 	 * @return array|WP_Error
 	 */
-	private static function start_local( $post_id, array $tree, $message, array $history ) {
+	private static function start_local( $post_id, array $tree, $message, array $history, $mode = 'page' ) {
 		$user = wp_get_current_user();
 		$pw   = WP_Application_Passwords::create_new_application_password( $user->ID, array(
-			'name' => FW_Extension_AI_Assistant::APP_PASSWORD_NAME . ' — builder panel (temporary)',
+			'name' => FW_Extension_AI_Assistant::APP_PASSWORD_NAME . ( $mode === 'site' ? ' — site assistant' : ' — builder panel' ) . ' (temporary)',
 		) );
 		if ( is_wp_error( $pw ) ) {
 			return $pw;
@@ -370,7 +561,7 @@ class FW_AI_Panel {
 			),
 		) ) );
 
-		$prompt = self::instructions( $post_id, $tree ) . "\n\nUse only the unysonplus MCP tools.\n";
+		$prompt = ( $mode === 'site' ? self::site_instructions() : self::instructions( $post_id, $tree ) ) . "\n\nUse only the unysonplus MCP tools.\n";
 		if ( $history ) {
 			$prompt .= "\nConversation so far:\n";
 			foreach ( $history as $h ) {
@@ -381,6 +572,7 @@ class FW_AI_Panel {
 
 		// The session must exist before the agent's first MCP request arrives.
 		$data = array(
+			'mode'    => $mode,
 			'user'    => $user->ID,
 			'post_id' => (int) $post_id,
 			'tree'    => $tree,
@@ -454,7 +646,7 @@ class FW_AI_Panel {
 		$reply = $done ? FW_AI_Local::output( $data['dir'] ) : '';
 		$ok    = $done && $reply !== '';
 		$check = null;
-		if ( $data['steps'] ) {
+		if ( $data['steps'] && ( $data['mode'] ?? 'page' ) !== 'site' ) {
 			// Every build reply carries a render check of the tree the agent produced.
 			FW_AI_Store::sandbox( (int) $data['post_id'], (array) $data['tree'] );
 			$check = FW_AI_Check::run( (int) $data['post_id'] );

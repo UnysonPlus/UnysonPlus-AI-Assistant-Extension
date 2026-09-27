@@ -11,6 +11,9 @@
  *             builder's history records as a single undo step (same path the Templates loader uses).
  *   live    — the Live Page Editor: window.fwLiveEditor.model, replaced the way its own
  *             "restore revision" does (recordHistory → model → rebuildIndex → markDirty → render).
+ *   site    — every other admin screen: the site-wide assistant. No tree; it works on the real site
+ *             and reports each change it made with a link. Opened from the ✦ AI Assistant admin-bar
+ *             item (which opens the page panel on builder screens).
  */
 ( function ( $ ) {
 	'use strict';
@@ -34,8 +37,16 @@
 	 * Host adapters
 	 * ------------------------------------------------------------------ */
 
+	var isSite = cfg.host === 'site';
+	if ( isSite ) {
+		l.title = l.siteTitle || l.title;
+		l.placeholder = l.sitePlaceholder || l.placeholder;
+		l.starters = l.siteStarters || l.starters;
+	}
+
 	var host = {
 		ready: function () {
+			if ( isSite ) { return true; }
 			return cfg.host === 'live' ? !! window.fwLiveEditor : !! builder;
 		},
 		getTree: function () {
@@ -72,6 +83,34 @@
 
 	function esc( s ) {
 		return $( '<div>' ).text( String( s == null ? '' : s ) ).html();
+	}
+
+	/**
+	 * A small, SAFE markdown subset for model replies: the text is escaped first, then only
+	 * **bold**, `code`, [text](http… or /…) links and "- " bullet lists are turned into markup.
+	 */
+	function md( text ) {
+		var out = [], list = null;
+		String( text == null ? '' : text ).split( /\r?\n/ ).forEach( function ( line ) {
+			var li = /^\s*[-*•]\s+(.*)$/.exec( line );
+			var inline = function ( t ) {
+				return esc( t )
+					.replace( /\*\*([^*]+)\*\*/g, '<strong>$1</strong>' )
+					.replace( /`([^`]+)`/g, '<code>$1</code>' )
+					.replace( /\[([^\]]+)\]\(((?:https?:\/\/|\/)[^\s)]+)\)/g, function ( m, label, url ) {
+						return '<a href="' + url.replace( /"/g, '&quot;' ) + '" target="_blank" rel="noopener">' + label + '</a>';
+					} );
+			};
+			if ( li ) {
+				if ( ! list ) { list = []; }
+				list.push( '<li>' + inline( li[1] ) + '</li>' );
+				return;
+			}
+			if ( list ) { out.push( '<ul class="upw-aip__md-list">' + list.join( '' ) + '</ul>' ); list = null; }
+			if ( line.replace( /\s+/g, '' ) !== '' ) { out.push( '<p>' + inline( line ) + '</p>' ); }
+		} );
+		if ( list ) { out.push( '<ul class="upw-aip__md-list">' + list.join( '' ) + '</ul>' ); }
+		return out.join( '' );
 	}
 
 	function mount() {
@@ -136,10 +175,36 @@
 	function toggle( open ) {
 		$root.find( '.upw-aip__panel' ).prop( 'hidden', ! open );
 		$root.find( '.upw-aip__launch' ).attr( 'aria-expanded', open ? 'true' : 'false' ).prop( 'hidden', open );
+		place();
 		if ( open ) {
 			$input.trigger( 'focus' );
 		}
 	}
+
+	/**
+	 * In the backend builder, keep clear of the right-hand sidebar (the Publish box): anchor the
+	 * panel to the left edge of that sidebar instead of the window edge.
+	 */
+	function place() {
+		if ( cfg.host !== 'builder' || ! $root ) { return; }
+		var $side = $( '#postbox-container-1' );
+		var right = 20;
+		if ( $side.length && $side.is( ':visible' ) && $side.offset().left > window.innerWidth / 2 ) {
+			right = Math.max( 20, window.innerWidth - $side.offset().left + 16 );
+		}
+		$root.css( 'right', right + 'px' );
+	}
+	$( window ).on( 'resize', function () { place(); } );
+
+	// The admin-bar ✦ item opens the panel (the page panel on builder screens, the site one elsewhere).
+	$( document ).on( 'click', '#wp-admin-bar-upw-ai-assistant > a, #wp-admin-bar-upw-ai-assistant > .ab-item', function ( e ) {
+		e.preventDefault();
+		if ( ! mounted ) {
+			if ( ! host.ready() ) { return; }
+			mount();
+		}
+		toggle( $root.find( '.upw-aip__panel' ).prop( 'hidden' ) );
+	} );
 
 	function bubble( role, html ) {
 		var $b = $( '<div class="upw-aip__msg upw-aip__msg--' + role + '">' ).html( html );
@@ -163,6 +228,36 @@
 	 * Run
 	 * ------------------------------------------------------------------ */
 
+	/**
+	 * The "working" indicator: three bouncing dots, a status line and a live timer, plus the
+	 * number of changes made so far when the backend reports progress (local agent polling).
+	 */
+	function working() {
+		var started = Date.now();
+		var steps = 0;
+		var $w = $(
+			'<div class="upw-aip__working" role="status">' +
+				'<span class="upw-aip__dots" aria-hidden="true"><i></i><i></i><i></i></span>' +
+				'<span class="upw-aip__working-text"></span>' +
+			'</div>'
+		);
+		function render() {
+			var secs = Math.floor( ( Date.now() - started ) / 1000 );
+			var t = ( l.working || 'Working on it…' ).replace( /[.…]+$/, '' );
+			if ( steps ) {
+				t += ' · ' + steps + ' ' + ( steps === 1 ? ( l.change || 'change' ) : ( l.changes || 'changes' ) );
+			}
+			$w.find( '.upw-aip__working-text' ).text( t + ' · ' + secs + 's' );
+		}
+		render();
+		var timer = setInterval( render, 1000 );
+		$log.append( $w );
+		$log.scrollTop( $log[ 0 ].scrollHeight );
+		$w.upwSteps = function ( n ) { steps = n || 0; render(); };
+		$w.upwStop = function () { clearInterval( timer ); $w.remove(); };
+		return $w;
+	}
+
 	function send() {
 		var text = $.trim( $input.val() );
 		if ( ! text || busy || ! cfg.backend ) {
@@ -175,18 +270,16 @@
 		$root.find( '.upw-aip__starters' ).remove();
 		$input.val( '' );
 		bubble( 'user', esc( text ) );
-		var $wait = note( l.working );
+		var $wait = working();
 		setBusy( true );
 
-		var before = host.getTree();
-		var beforeJson = JSON.stringify( before );
+		var before = isSite ? null : host.getTree();
+		var beforeJson = isSite ? '' : JSON.stringify( before );
+		var body = isSite
+			? { message: text, history: history.slice( -12 ) }
+			: { post_id: cfg.postId, message: text, tree: before, history: history.slice( -12 ) };
 
-		request( cfg.runUrl, 'POST', {
-			post_id: cfg.postId,
-			message: text,
-			tree:    before,
-			history: history.slice( -12 )
-		} ).done( function ( res ) {
+		request( cfg.runUrl, 'POST', body ).done( function ( res ) {
 			if ( res && res.status === 'running' && res.session ) {
 				poll( res.session, $wait, text, before, beforeJson );
 				return;
@@ -203,7 +296,7 @@
 				.done( function ( res ) {
 					if ( res && res.status === 'running' ) {
 						var n = ( res.steps || [] ).length;
-						$wait.text( l.working + ( n ? ' (' + n + ')' : '' ) );
+						$wait.upwSteps( n );
 						poll( session, $wait, text, before, beforeJson );
 						return;
 					}
@@ -216,7 +309,7 @@
 	}
 
 	function finish( res, $wait, text, before, beforeJson ) {
-		$wait.remove();
+		$wait.upwStop();
 		setBusy( false );
 		res = res || {};
 		if ( res.status === 'error' ) {
@@ -224,12 +317,30 @@
 			return;
 		}
 
-		var html = esc( res.reply || '' ).replace( /\n/g, '<br>' );
+		var html = '<div class="upw-aip__md">' + md( res.reply || '' ) + '</div>';
 		var steps = res.steps || [];
 		if ( steps.length ) {
-			html += '<ul class="upw-aip__steps">' + steps.map( function ( s ) {
-				return '<li>' + esc( s.note || s.ability ) + '</li>';
+			// One line per thing changed: several steps on the same page / screen share one link.
+			var rows = [], byUrl = {};
+			steps.forEach( function ( s ) {
+				if ( s.url && byUrl[ s.url ] ) { byUrl[ s.url ].n++; return; }
+				var row = { note: s.note || s.ability, url: s.url || '', n: 1 };
+				if ( s.url ) { byUrl[ s.url ] = row; }
+				rows.push( row );
+			} );
+			html += '<ul class="upw-aip__steps">' + rows.map( function ( r ) {
+				var more = r.n > 1 ? ' <span class="upw-aip__more">(+' + ( r.n - 1 ) + ')</span>' : '';
+				var link = r.url ? ' <a href="' + esc( r.url ) + '" target="_blank" rel="noopener">' + esc( l.open_link || 'Open' ) + ' ↗</a>' : '';
+				return '<li>' + esc( r.note ) + more + link + '</li>';
 			} ).join( '' ) + '</ul>';
+		}
+
+		if ( isSite ) {
+			html += '<p class="upw-aip__meta">' + esc( steps.length ? l.siteDone : l.siteNoChange ) + '</p>';
+			bubble( 'assistant', html );
+			history.push( { role: 'user', text: text } );
+			history.push( { role: 'assistant', text: res.reply || '' } );
+			return;
 		}
 
 		if ( res.check ) {
@@ -277,7 +388,7 @@
 	}
 
 	function fail( xhr, $wait ) {
-		$wait.remove();
+		$wait.upwStop();
 		setBusy( false );
 		var msg = ( xhr && xhr.responseJSON && xhr.responseJSON.message ) || ( xhr && xhr.statusText ) || '';
 		note( l.error + ' ' + msg );
@@ -297,7 +408,10 @@
 		} );
 	}
 
-	// The Live Editor exposes its instance on load; the builder mounts from its init event.
+	// The site host mounts on ready; the Live Editor when its instance appears; the builder from its init event.
+	if ( isSite ) {
+		$( mount );
+	}
 	if ( cfg.host === 'live' ) {
 		$( function () {
 			var tries = 0;

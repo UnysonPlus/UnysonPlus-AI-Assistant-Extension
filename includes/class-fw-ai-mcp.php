@@ -144,10 +144,15 @@ class FW_AI_MCP {
 		}
 
 		$session = self::session( $request );
+		$site    = $session && ( $session['data']['mode'] ?? 'page' ) === 'site';
 		if ( $session ) {
 			self::$session = $session;
-			FW_AI_Store::sandbox( $session['data']['post_id'], (array) $session['data']['tree'] );
+			if ( ! $site ) {
+				// Builder panel: the agent edits a sandbox of the tree the person has open.
+				FW_AI_Store::sandbox( $session['data']['post_id'], (array) $session['data']['tree'] );
+			}
 			FW_AI_Store::take_log();
+			FW_AI_Panel::take_activity();
 		}
 
 		$batch    = array_keys( $body ) === range( 0, count( $body ) - 1 ) && $body;
@@ -162,9 +167,13 @@ class FW_AI_MCP {
 
 		if ( $session ) {
 			// Persist the sandboxed tree + the writes made, for the panel's status poll.
-			$data          = FW_AI_Panel::get_session( $session['id'] );
-			$data['tree']  = FW_AI_Store::get_tree( $session['data']['post_id'] );
-			$data['steps'] = array_merge( (array) $data['steps'], FW_AI_Store::take_log() );
+			$data = FW_AI_Panel::get_session( $session['id'] );
+			if ( $site ) {
+				$data['steps'] = array_merge( (array) $data['steps'], FW_AI_Panel::take_activity() );
+			} else {
+				$data['tree']  = FW_AI_Store::get_tree( $session['data']['post_id'] );
+				$data['steps'] = array_merge( (array) $data['steps'], FW_AI_Store::take_log() );
+			}
 			FW_AI_Panel::put_session( $session['id'], $data );
 		}
 
@@ -250,6 +259,8 @@ class FW_AI_MCP {
 				'Pages are trees of layout items (flexbox / section / column) holding elements (type "simple" + shortcode). Use the `path` values from get_page to address items.',
 				'New pages are drafts unless the user asks otherwise. Every write saves a revision; undo reverts the last one.',
 				'After building, call render_check and fix every error and warning it reports before telling the user you are done.',
+				'Building a whole site, work outside-in: (1) the design system — describe_theme_settings, then update_theme_settings for colours, typography and layout, and save_preset for button / box / section styles; (2) header and footer settings; (3) pages — create_page, then apply_template or insert_items section by section; (4) render_check every page. Theme Settings changes are live immediately (undo_theme_settings reverts them).',
+				'To reproduce an existing website, use convert_url — only after the user explicitly agrees, because it replaces pages and activates a new child theme.',
 				'Style buttons and cards with Theme Settings presets (list_presets) rather than per-element colors.',
 				self::mode() === 'read' ? 'This connection is READ-ONLY: write tools are not available.' : '',
 			) ),
@@ -269,8 +280,9 @@ class FW_AI_MCP {
 			if ( strpos( $name, 'unysonplus/' ) !== 0 ) {
 				continue;
 			}
-			if ( self::$session && ! in_array( substr( $name, strlen( 'unysonplus/' ) ), FW_AI_Panel::TOOLS, true ) ) {
-				continue; // A panel session gets the panel's tool set (no create-page / revisions).
+			if ( self::$session && ( self::$session['data']['mode'] ?? 'page' ) !== 'site'
+				&& ! in_array( substr( $name, strlen( 'unysonplus/' ) ), FW_AI_Panel::page_tools(), true ) ) {
+				continue; // A builder-panel session gets the panel's tool set; a site session gets them all.
 			}
 			$ann = (array) $ability->get_meta_item( 'annotations', array() );
 			if ( $read_only && empty( $ann['readonly'] ) ) {

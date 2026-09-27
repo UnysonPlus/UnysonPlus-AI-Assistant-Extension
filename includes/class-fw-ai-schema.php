@@ -181,7 +181,7 @@ class FW_AI_Schema {
 	 * @param mixed $choices
 	 * @return array
 	 */
-	private static function flat_choices( $choices ) {
+	public static function flat_choices( $choices ) {
 		$out = array();
 		if ( ! is_array( $choices ) ) {
 			return $out;
@@ -244,6 +244,33 @@ class FW_AI_Schema {
 			}
 			if ( array_key_exists( 'value', $opt ) ) {
 				$row['default'] = $opt['value'];
+			}
+			$inner = self::inner_leaves( $opt );
+			if ( $inner ) {
+				// List / nested options: the model must use exactly these keys inside each row / object.
+				$row['inner_options'] = array();
+				foreach ( $inner as $iid => $iopt ) {
+					$irow = array( 'id' => (string) $iid, 'type' => (string) $iopt['type'] );
+					if ( ! empty( $iopt['label'] ) && is_string( $iopt['label'] ) ) {
+						$irow['label'] = wp_strip_all_tags( $iopt['label'] );
+					}
+					if ( in_array( $iopt['type'], self::CHOICE_TYPES, true ) ) {
+						$ic = self::flat_choices( $iopt['choices'] ?? array() );
+						if ( $ic ) {
+							$irow['choices'] = array_slice( $ic, 0, 40, true );
+						}
+					}
+					if ( $iopt['type'] === 'switch' ) {
+						$irow['choices'] = array_values( self::switch_values( $iopt ) );
+					}
+					if ( array_key_exists( 'value', $iopt ) ) {
+						$irow['default'] = $iopt['value'];
+					}
+					$row['inner_options'][] = $irow;
+				}
+				$row['shape'] = self::is_list_type( $opt['type'] )
+					? 'a LIST of objects, each using only the inner_options ids as keys'
+					: 'an object using only the inner_options ids as keys';
 			}
 			$options[] = $row;
 		}
@@ -393,11 +420,7 @@ class FW_AI_Schema {
 				$unknown[] = (string) $id;
 				continue;
 			}
-			$opt = $leaves[ $id ][0];
-			$msg = self::check_value( $opt, $value );
-			if ( $msg ) {
-				$errors[] = "$path ($tag.$id): $msg";
-			}
+			self::check_deep( $leaves[ $id ][0], $value, "$path ($tag.$id)", $errors );
 		}
 		if ( $unknown ) {
 			$errors[] = sprintf(
@@ -413,12 +436,15 @@ class FW_AI_Schema {
 	 * @param mixed $value
 	 * @return string '' when valid, else the problem.
 	 */
-	private static function check_value( array $opt, $value ) {
+	public static function check_value( array $opt, $value ) {
 		$type = (string) $opt['type'];
 
 		if ( in_array( $type, array( 'select', 'short-select', 'radio', 'image-picker' ), true ) ) {
 			$choices = self::flat_choices( $opt['choices'] ?? array() );
-			if ( $choices && ! is_array( $value ) && ! array_key_exists( (string) $value, $choices ) ) {
+			if ( $choices && is_array( $value ) ) {
+				return sprintf( 'expected ONE of these values, not an object: %s.', implode( ', ', array_slice( array_keys( $choices ), 0, 30 ) ) );
+			}
+			if ( $choices && ! array_key_exists( (string) $value, $choices ) ) {
 				return sprintf( '"%s" is not an allowed value (allowed: %s).', is_scalar( $value ) ? (string) $value : gettype( $value ), implode( ', ', array_slice( array_keys( $choices ), 0, 30 ) ) );
 			}
 			return '';
@@ -440,7 +466,106 @@ class FW_AI_Schema {
 		if ( isset( $opt['value'] ) && is_array( $opt['value'] ) && $opt['value'] && is_scalar( $value ) && $value !== '' ) {
 			return sprintf( 'expected an object shaped like the default %s.', wp_json_encode( $opt['value'] ) );
 		}
+		// …and the reverse: an object where the option holds a single value.
+		if ( isset( $opt['value'] ) && is_scalar( $opt['value'] ) && $opt['value'] !== '' && is_array( $value ) ) {
+			return sprintf( 'expected a single value like the default %s, not an object.', wp_json_encode( $opt['value'] ) );
+		}
 		return '';
+	}
+
+	/** Option types holding a list of rows (each row keyed by the inner options). */
+	const LIST_TYPES = array( 'addable-popup', 'addable-box' );
+
+	/** Types that are UI only (no stored value). */
+	const UI_TYPES = array( 'html', 'html-full', 'html-fixed', 'preset-loader' );
+
+	/**
+	 * @param string $type
+	 * @return bool
+	 */
+	public static function is_list_type( $type ) {
+		return in_array( $type, self::LIST_TYPES, true );
+	}
+
+	/**
+	 * Inner leaves of a nested option: multi / multi-inline (inner-options), addable-popup
+	 * (popup-options), addable-box (box-options). [] for anything else.
+	 *
+	 * @param array $opt
+	 * @return array id => option
+	 */
+	public static function inner_leaves( array $opt ) {
+		foreach ( array( 'inner-options', 'popup-options', 'box-options' ) as $k ) {
+			if ( ! empty( $opt[ $k ] ) && is_array( $opt[ $k ] ) ) {
+				$tmp = array();
+				self::walk( $opt[ $k ], '', $tmp );
+				$out = array();
+				foreach ( $tmp as $id => $pair ) {
+					if ( ! in_array( $pair[0]['type'], self::UI_TYPES, true ) ) {
+						$out[ $id ] = $pair[0];
+					}
+				}
+				return $out;
+			}
+		}
+		return array();
+	}
+
+	/**
+	 * Validate a value against its option, recursing into nested and list options so a row
+	 * with the wrong keys (e.g. an accordion item without `tab_title`) is caught, not stored.
+	 *
+	 * @param array  $opt
+	 * @param mixed  $value
+	 * @param string $path   For messages.
+	 * @param array  $errors Collected (by reference).
+	 */
+	public static function check_deep( array $opt, $value, $path, array &$errors ) {
+		$type  = (string) ( $opt['type'] ?? '' );
+		$inner = self::inner_leaves( $opt );
+
+		if ( $inner && self::is_list_type( $type ) ) {
+			if ( ! is_array( $value ) || ( $value && array_keys( $value ) !== range( 0, count( $value ) - 1 ) ) ) {
+				$errors[] = "$path: expected a list of objects with keys " . implode( ', ', array_keys( $inner ) ) . '.';
+				return;
+			}
+			foreach ( $value as $i => $row ) {
+				if ( ! is_array( $row ) ) {
+					$errors[] = "{$path}[$i]: each item must be an object with keys " . implode( ', ', array_keys( $inner ) ) . '.';
+					continue;
+				}
+				$unknown = array_diff( array_keys( $row ), array_keys( $inner ), array( 'id', 'slug' ) );
+				if ( $unknown ) {
+					$errors[] = "{$path}[$i]: unknown key(s) " . implode( ', ', $unknown ) . ' — use ' . implode( ', ', array_keys( $inner ) ) . '.';
+				}
+				foreach ( $row as $k => $v ) {
+					if ( isset( $inner[ $k ] ) ) {
+						self::check_deep( $inner[ $k ], $v, "{$path}[$i].$k", $errors );
+					}
+				}
+			}
+			return;
+		}
+
+		if ( $inner ) { // multi / multi-inline: an object keyed by the inner options.
+			if ( ! is_array( $value ) ) {
+				$errors[] = "$path: expected an object with keys " . implode( ', ', array_slice( array_keys( $inner ), 0, 25 ) ) . '.';
+				return;
+			}
+			foreach ( $value as $k => $v ) {
+				if ( ! isset( $inner[ $k ] ) ) {
+					$errors[] = "$path.$k: unknown key (valid: " . implode( ', ', array_slice( array_keys( $inner ), 0, 25 ) ) . ').';
+					continue;
+				}
+				self::check_deep( $inner[ $k ], $v, "$path.$k", $errors );
+			}
+			return;
+		}
+
+		$msg = self::check_value( $opt, $value );
+		if ( $msg ) {
+			$errors[] = "$path: $msg";
+		}
 	}
 
 	/**

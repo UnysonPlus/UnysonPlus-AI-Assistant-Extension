@@ -103,8 +103,12 @@
 		input.value = '';
 		lastQuestion = q;
 		bubble( 'user', q );
-		var wait = bubble( 'note', l.thinking );
-		wait.classList.add( 'is-thinking' );
+		var wait = el( 'div', 'upw-aiv__msg upw-aiv__msg--assistant upw-aiv__typing' );
+		wait.setAttribute( 'role', 'status' );
+		wait.setAttribute( 'aria-label', l.thinking );
+		wait.innerHTML = '<i></i><i></i><i></i>';
+		log.appendChild( wait );
+		log.scrollTop = log.scrollHeight;
 		setBusy( true );
 
 		post( cfg.askUrl, { message: q, history: history.slice( -6 ), nonce: cfg.nonce } )

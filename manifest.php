@@ -11,7 +11,7 @@ $manifest['description'] = __(
 	'fw'
 );
 
-$manifest['version']     = '1.0.4';
+$manifest['version']     = '1.0.6';
 $manifest['display']     = true;
 $manifest['standalone']  = true;
 
@@ -47,6 +47,32 @@ $manifest['requires_wp']  = '6.9'; // Abilities API (wp_register_ability) landed
 /**
  * Changelog
  * ---------
+ * 1.0.6 - Site-wide assistant + extension toolkit. An "AI Assistant" item in the
+ *         admin bar opens a chat on every admin screen with every ability (new
+ *         pages as drafts, Theme Settings live and undoable), listing each change
+ *         with a link. fw_ai_register_ability() + fw_ai_snapshot() let any extension
+ *         register its own abilities (hook fw_ai_assistant_register_abilities),
+ *         with generic undo (list-changes / undo-change, incl. created posts).
+ *         Theme Settings writes now honour the Site Converter's manual-edit
+ *         fingerprints (hand-edited groups are skipped unless force), reject values
+ *         of the wrong shape and roll back if the theme cannot build its CSS.
+ *         Validation now checks inside list / nested options (accordion items …)
+ *         and describe-element shows their keys. Creating a connection switches MCP
+ *         access on; the builder panel keeps clear of the Publish box; new progress
+ *         indicator; replies render bold / lists / links.
+ *
+ * 1.0.5 - Site-building abilities. describe-theme-settings (index of every Theme Settings
+ *         option by section, or one option's schema + current value), update-theme-settings
+ *         (validated against the live settings schema, object values merged), save-preset
+ *         (create / update one named button, box, section, colour or typography preset),
+ *         list-settings-revisions + undo-theme-settings (every change snapshotted first),
+ *         list-templates + apply-template (Template Library, installed on demand, and the
+ *         builder's saved templates; also in the builder panel), and convert-url (the Site
+ *         Converter, rendered by the capture service when it runs; refuses without an
+ *         explicit confirm). Settings writes rebuild the theme's generated CSS directly
+ *         instead of firing the settings-saved hook, like the Site Converter. site-info now
+ *         flags a child theme whose stylesheet can override Theme Settings.
+ *
  * 1.0.4 - Chat AI channel for visitors. With the Chat extension active, Theme Settings >
  *         Site-wide UX > Chat Button gains an "AI assistant (Beta)" channel that answers
  *         visitors from the site's PUBLISHED pages. The visitor's model gets no tools: the
