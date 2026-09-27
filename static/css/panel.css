@@ -15,6 +15,11 @@
 	color: var(--upw-aip-text);
 }
 
+.upw-aip--bottom-left {
+	right: auto;
+	left: 20px;
+}
+
 .upw-aip__launch {
 	display: inline-flex;
 	align-items: center;
@@ -185,7 +190,8 @@
 	padding: 10px;
 	border-top: 1px solid var(--upw-aip-border);
 }
-.upw-aip__input {
+/* Two classes: the admin skin styles body.upa textarea (white), which beats a single class. */
+.upw-aip .upw-aip__input {
 	flex: 1;
 	min-height: 44px;
 	padding: 8px 10px;
@@ -196,7 +202,7 @@
 	font: inherit;
 	resize: none;
 }
-.upw-aip__input::placeholder { color: var(--upw-aip-muted); }
+.upw-aip .upw-aip__input::placeholder { color: var(--upw-aip-muted); }
 .upw-aip__send {
 	align-self: flex-end;
 	padding: 9px 14px;

@@ -140,11 +140,12 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 			// The local agent command only exists on development hosts; it is run by the web server,
 			// so it is never accepted (or kept) on a public host.
 			if ( FW_AI_MCP::is_local_host() && isset( $_POST['local_cmd'] ) ) {
-				$cmd = trim( str_replace( array( "
-", "
+				$cmd = trim( str_replace( array( "", "
 " ), ' ', (string) wp_unslash( $_POST['local_cmd'] ) ) );
 				update_option( FW_AI_Panel::OPTION_LOCAL_CMD, $cmd, false );
 			}
+			$position = sanitize_key( wp_unslash( $_POST['panel_position'] ?? FW_AI_Panel::POSITION_DEFAULT ) );
+			update_option( FW_AI_Panel::OPTION_POSITION, in_array( $position, FW_AI_Panel::POSITIONS, true ) ? $position : FW_AI_Panel::POSITION_DEFAULT, false );
 			$this->notices[] = array( 'success', __( 'Builder assistant settings saved.', 'fw' ) );
 			return;
 		}

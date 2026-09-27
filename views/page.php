@@ -168,6 +168,7 @@ $status_row = static function ( $ok, $label, $detail ) {
 	<?php
 	$panel_pref = (string) get_option( FW_AI_Panel::OPTION_BACKEND, 'auto' );
 	$local_cmd  = (string) get_option( FW_AI_Panel::OPTION_LOCAL_CMD, '' );
+	$panel_pos  = FW_AI_Panel::position();
 	$is_local   = FW_AI_MCP::is_local_host();
 	?>
 	<div class="card" style="max-width:60em">
@@ -187,6 +188,17 @@ $status_row = static function ( $ok, $label, $detail ) {
 								<?php endif; ?>
 								<option value="off" <?php selected( $panel_pref, 'off' ); ?>><?php esc_html_e( 'Off — hide the builder assistant', 'fw' ); ?></option>
 							</select>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="upw-ai-panel-position"><?php esc_html_e( 'Panel position', 'fw' ); ?></label></th>
+						<td>
+							<select id="upw-ai-panel-position" name="panel_position">
+								<option value="bottom-right" <?php selected( $panel_pos, 'bottom-right' ); ?>><?php esc_html_e( 'Bottom right', 'fw' ); ?></option>
+								<option value="bottom-left" <?php selected( $panel_pos, 'bottom-left' ); ?>><?php esc_html_e( 'Bottom left', 'fw' ); ?></option>
+								<option value="beside-sidebar" <?php selected( $panel_pos, 'beside-sidebar' ); ?>><?php esc_html_e( 'Beside the sidebar — keeps the Publish box clear in the page builder', 'fw' ); ?></option>
+							</select>
+							<p class="description"><?php esc_html_e( 'Where the AI Assistant button and panel sit, in the page builder, the Live Page Editor and the rest of wp-admin.', 'fw' ); ?></p>
 						</td>
 					</tr>
 					<?php if ( $is_local ) : ?>

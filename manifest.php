@@ -11,7 +11,7 @@ $manifest['description'] = __(
 	'fw'
 );
 
-$manifest['version']     = '1.0.7';
+$manifest['version']     = '1.0.8';
 $manifest['display']     = true;
 $manifest['standalone']  = true;
 
@@ -47,7 +47,14 @@ $manifest['requires_wp']  = '6.9'; // Abilities API (wp_register_ability) landed
 /**
  * Changelog
  * ---------
- * 1.0.7 - Toolkit + checks for the extension batch. fw_ai_snapshot() also covers
+ * 1.0.8 - Panel position setting (AI Assistant settings → Builder assistant): bottom right
+ *         (the new default), bottom left (measured clear of the wp-admin menu, whatever its
+ *         width), or beside the sidebar (the previous behaviour — anchored left of the
+ *         builder's right-hand column so the Publish box stays clear). Option
+ *         upw_ai_panel_position. Also: the input box no longer turns white under the admin
+ *         skin, and quotes in the placeholder no longer cut it short.
+ *
+ * 1.0.7 -Toolkit + checks for the extension batch. fw_ai_snapshot() also covers
  *         created_menus, post_fields, post_terms; undo restores untrashed posts to
  *         their previous status and clears the framework cache. A 'permission'
  *         string is always a capability. The validator accepts Global Section

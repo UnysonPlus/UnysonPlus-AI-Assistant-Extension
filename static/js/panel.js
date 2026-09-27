@@ -82,7 +82,8 @@
 	var $root, $log, $input, $send, history = [], busy = false, mounted = false;
 
 	function esc( s ) {
-		return $( '<div>' ).text( String( s == null ? '' : s ) ).html();
+		// .text().html() escapes < > & but not quotes, and esc() also feeds attribute values.
+		return $( '<div>' ).text( String( s == null ? '' : s ) ).html().replace( /"/g, '&quot;' ).replace( /'/g, '&#39;' );
 	}
 
 	/**
@@ -120,7 +121,7 @@
 		mounted = true;
 
 		$root = $(
-			'<div class="upw-aip" data-host="' + esc( cfg.host ) + '">' +
+			'<div class="upw-aip upw-aip--' + esc( cfg.position || 'bottom-right' ) + '" data-host="' + esc( cfg.host ) + '">' +
 				'<button type="button" class="upw-aip__launch" aria-expanded="false">' +
 					'<span class="upw-aip__spark" aria-hidden="true">✦</span> ' + esc( l.open ) +
 				'</button>' +
@@ -170,6 +171,7 @@
 			} ).join( '' );
 			$log.append( '<div class="upw-aip__starters">' + chips + '</div>' );
 		}
+		place();
 	}
 
 	function toggle( open ) {
@@ -182,11 +184,20 @@
 	}
 
 	/**
-	 * In the backend builder, keep clear of the right-hand sidebar (the Publish box): anchor the
-	 * panel to the left edge of that sidebar instead of the window edge.
+	 * Bottom right is plain CSS. Bottom left sits clear of the wp-admin menu column, measured (admin
+	 * skins change its width; it is folded or hidden on small screens). "Beside the sidebar", backend
+	 * builder only, anchors the panel to the left edge of the right-hand sidebar so the Publish box
+	 * stays clear.
 	 */
 	function place() {
-		if ( cfg.host !== 'builder' || ! $root ) { return; }
+		if ( ! $root ) { return; }
+		if ( cfg.position === 'bottom-left' ) {
+			var menu = document.getElementById( 'adminmenuwrap' );
+			var r    = menu ? menu.getBoundingClientRect() : null; // fixed-position: offsetParent is always null
+			$root.css( 'left', ( r && r.width && r.right < window.innerWidth / 2 ? Math.round( r.right ) + 20 : 20 ) + 'px' );
+			return;
+		}
+		if ( cfg.host !== 'builder' || cfg.position !== 'beside-sidebar' ) { return; }
 		var $side = $( '#postbox-container-1' );
 		var right = 20;
 		if ( $side.length && $side.is( ':visible' ) && $side.offset().left > window.innerWidth / 2 ) {
@@ -195,6 +206,8 @@
 		$root.css( 'right', right + 'px' );
 	}
 	$( window ).on( 'resize', function () { place(); } );
+	// wp-admin fires this when the admin menu is folded / unfolded.
+	$( document ).on( 'wp-collapse-menu', function () { place(); } );
 
 	// The admin-bar ✦ item opens the panel (the page panel on builder screens, the site one elsewhere).
 	$( document ).on( 'click', '#wp-admin-bar-upw-ai-assistant > a, #wp-admin-bar-upw-ai-assistant > .ab-item', function ( e ) {

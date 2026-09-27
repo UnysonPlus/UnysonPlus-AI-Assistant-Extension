@@ -31,6 +31,9 @@ class FW_AI_Panel {
 
 	const OPTION_BACKEND   = 'upw_ai_panel_backend';   // auto | wp | local | off
 	const OPTION_LOCAL_CMD = 'upw_ai_local_agent_cmd';
+	const OPTION_POSITION  = 'upw_ai_panel_position';  // bottom-right | bottom-left | beside-sidebar
+	const POSITIONS        = array( 'bottom-right', 'bottom-left', 'beside-sidebar' );
+	const POSITION_DEFAULT = 'bottom-right';
 	const SESSION_PREFIX   = 'upw_ai_ps_';
 	const SESSION_TTL      = 1800;
 	const LOCAL_TIMEOUT    = 600;
@@ -205,6 +208,18 @@ class FW_AI_Panel {
 	}
 
 	/**
+	 * Where the panel sits: bottom-right (default), bottom-left, or beside-sidebar (in the backend
+	 * builder, anchored left of the right-hand sidebar so the Publish box stays clear; elsewhere
+	 * bottom-right).
+	 *
+	 * @return string
+	 */
+	public static function position() {
+		$p = (string) get_option( self::OPTION_POSITION, self::POSITION_DEFAULT );
+		return in_array( $p, self::POSITIONS, true ) ? $p : self::POSITION_DEFAULT;
+	}
+
+	/**
 	 * @param int    $post_id
 	 * @param string $host builder | live
 	 */
@@ -217,6 +232,7 @@ class FW_AI_Panel {
 		$backend = self::backend();
 		wp_localize_script( 'upw-ai-panel', 'upwAiPanel', array(
 			'host'     => $host,
+			'position' => self::position(),
 			'postId'   => (int) $post_id,
 			'backend'  => $backend,
 			'runUrl'   => rest_url( FW_AI_MCP::REST_NS . ( $host === 'site' ? '/site/run' : '/panel/run' ) ),
