@@ -144,7 +144,10 @@ class FW_AI_Toolkit {
 	 * Save the current values of some options and / or post meta keys before changing them.
 	 *
 	 * @param array  $spec    { options?: string[], post_meta?: { <post_id>: string[] },
-	 *                          created_posts?: int[] (undo trashes them), trashed_posts?: int[] (undo restores them) }
+	 *                          created_posts?: int[] (undo trashes them), trashed_posts?: int[] (undo restores them),
+	 *                          created_menus?: int[] (nav menu term ids; undo deletes the menu — not re-creatable),
+	 *                          post_fields?: { <post_id>: [ post_title | post_content | post_excerpt | post_status | post_name | menu_order | post_parent ] },
+	 *                          post_terms?: { <post_id>: [ taxonomy, … ] } }
 	 * @param string $ability
 	 * @param string $note
 	 * @return int Revision id (return it as undo_revision_id).
@@ -155,7 +158,26 @@ class FW_AI_Toolkit {
 			'post_meta'     => array(),
 			'created_posts' => array_map( 'intval', (array) ( $spec['created_posts'] ?? array() ) ),
 			'trashed_posts' => array_map( 'intval', (array) ( $spec['trashed_posts'] ?? array() ) ),
+			'created_menus' => array_map( 'intval', (array) ( $spec['created_menus'] ?? array() ) ),
+			'post_fields'   => array(),
+			'post_terms'    => array(),
 		);
+		foreach ( (array) ( $spec['post_fields'] ?? array() ) as $post_id => $fields ) {
+			$post = get_post( (int) $post_id );
+			if ( $post ) {
+				foreach ( (array) $fields as $f ) {
+					if ( in_array( $f, array( 'post_title', 'post_content', 'post_excerpt', 'post_status', 'post_name', 'menu_order', 'post_parent' ), true ) ) {
+						$values['post_fields'][ (int) $post_id ][ $f ] = $post->$f;
+					}
+				}
+			}
+		}
+		foreach ( (array) ( $spec['post_terms'] ?? array() ) as $post_id => $taxonomies ) {
+			foreach ( (array) $taxonomies as $tax ) {
+				$ids = wp_get_object_terms( (int) $post_id, (string) $tax, array( 'fields' => 'ids' ) );
+				$values['post_terms'][ (int) $post_id ][ (string) $tax ] = is_wp_error( $ids ) ? array() : array_map( 'intval', $ids );
+			}
+		}
 		foreach ( (array) ( $spec['options'] ?? array() ) as $name ) {
 			$v = get_option( (string) $name, null );
 			$values['options'][ (string) $name ] = array( 'exists' => $v !== null, 'value' => $v );
@@ -217,9 +239,15 @@ class FW_AI_Toolkit {
 			return new WP_Error( 'upw_ai_no_revisions', 'No such change to undo.' );
 		}
 		$v    = (array) $rev['values'];
-		$spec = array( 'options' => array_keys( (array) ( $v['options'] ?? array() ) ), 'post_meta' => array() );
+		$spec = array( 'options' => array_keys( (array) ( $v['options'] ?? array() ) ), 'post_meta' => array(), 'post_fields' => array(), 'post_terms' => array() );
 		foreach ( (array) ( $v['post_meta'] ?? array() ) as $post_id => $keys ) {
 			$spec['post_meta'][ $post_id ] = array_keys( (array) $keys );
+		}
+		foreach ( (array) ( $v['post_fields'] ?? array() ) as $post_id => $fields ) {
+			$spec['post_fields'][ $post_id ] = array_keys( (array) $fields );
+		}
+		foreach ( (array) ( $v['post_terms'] ?? array() ) as $post_id => $taxes ) {
+			$spec['post_terms'][ $post_id ] = array_keys( (array) $taxes );
 		}
 		// Undoing a creation trashes the post, so undoing the undo must bring it back (and vice versa).
 		$spec['trashed_posts'] = (array) ( $v['created_posts'] ?? array() );
@@ -231,11 +259,20 @@ class FW_AI_Toolkit {
 				wp_trash_post( (int) $pid );
 			}
 		}
+		foreach ( (array) ( $v['created_menus'] ?? array() ) as $menu_id ) {
+			if ( is_nav_menu( (int) $menu_id ) ) {
+				wp_delete_nav_menu( (int) $menu_id );
+			}
+		}
+		// Since WP 5.6 an untrashed post comes back as a DRAFT; restore its previous status instead
+		// (a draft menu item, for one, silently disappears from its menu).
+		add_filter( 'wp_untrash_post_status', 'wp_untrash_post_set_previous_status', 10, 3 );
 		foreach ( (array) ( $v['trashed_posts'] ?? array() ) as $pid ) {
 			if ( get_post_status( (int) $pid ) === 'trash' ) {
 				wp_untrash_post( (int) $pid );
 			}
 		}
+		remove_filter( 'wp_untrash_post_status', 'wp_untrash_post_set_previous_status', 10 );
 
 		foreach ( (array) ( $v['options'] ?? array() ) as $name => $o ) {
 			if ( ! empty( $o['exists'] ) ) {
@@ -254,6 +291,22 @@ class FW_AI_Toolkit {
 			}
 			clean_post_cache( (int) $post_id );
 		}
+		foreach ( (array) ( $v['post_fields'] ?? array() ) as $post_id => $fields ) {
+			if ( get_post( (int) $post_id ) && $fields ) {
+				wp_update_post( wp_slash( array( 'ID' => (int) $post_id ) + (array) $fields ) );
+			}
+		}
+		foreach ( (array) ( $v['post_terms'] ?? array() ) as $post_id => $taxes ) {
+			foreach ( (array) $taxes as $tax => $ids ) {
+				wp_set_object_terms( (int) $post_id, array_map( 'intval', (array) $ids ), (string) $tax );
+			}
+		}
+
+		// The framework caches post / settings options per request; drop it so reads see the restored values.
+		if ( class_exists( 'FW_Cache' ) ) {
+			FW_Cache::clear();
+		}
+
 		/** Fires after the AI Assistant undoes a change (so an extension can flush caches). */
 		do_action( 'fw_ai_assistant_change_restored', $rev );
 		return array(

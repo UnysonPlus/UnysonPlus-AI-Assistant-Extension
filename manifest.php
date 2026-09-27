@@ -11,7 +11,7 @@ $manifest['description'] = __(
 	'fw'
 );
 
-$manifest['version']     = '1.0.6';
+$manifest['version']     = '1.0.7';
 $manifest['display']     = true;
 $manifest['standalone']  = true;
 
@@ -47,6 +47,16 @@ $manifest['requires_wp']  = '6.9'; // Abilities API (wp_register_ability) landed
 /**
  * Changelog
  * ---------
+ * 1.0.7 - Toolkit + checks for the extension batch. fw_ai_snapshot() also covers
+ *         created_menus, post_fields, post_terms; undo restores untrashed posts to
+ *         their previous status and clears the framework cache. A 'permission'
+ *         string is always a capability. The validator accepts Global Section
+ *         references and [snippet] at the page root; render-check treats special
+ *         builder items (contact forms) as elements and skips snippet references.
+ *         The site-wide assistant and MCP instructions now follow the site-build
+ *         protocol order (colours, typography, container width, presets, header /
+ *         footer with menus, then pages, then the ship check).
+ *
  * 1.0.6 - Site-wide assistant + extension toolkit. An "AI Assistant" item in the
  *         admin bar opens a chat on every admin screen with every ability (new
  *         pages as drafts, Theme Settings live and undoable), listing each change

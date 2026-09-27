@@ -121,6 +121,15 @@ class FW_AI_Check {
 				self::check_element( $node, $path, $issues, $stats, $heads );
 				continue;
 			}
+			if ( $type === 'global_section' ) {
+				continue; // A reference: its content lives in the snippet (checked there).
+			}
+			if ( ! in_array( $type, FW_AI_Schema::LAYOUT_TYPES, true ) ) {
+				// A special builder item (e.g. a contact form): check it like an element.
+				$stats['elements']++;
+				self::check_element( $node + array( 'shortcode' => str_replace( '-', '_', $type ) ), $path, $issues, $stats, $heads );
+				continue;
+			}
 			if ( ! $kids ) {
 				// An empty layout item that carries visible styling (a background, border, height,
 				// custom CSS / class) is decoration on purpose; a bare one is a leftover.

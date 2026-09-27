@@ -343,8 +343,14 @@ class FW_AI_Schema {
 		$type = $node['type'];
 		$atts = isset( $node['atts'] ) && is_array( $node['atts'] ) ? $node['atts'] : array();
 
+		// Snippets: a Global Section reference is a root item of its own, and the [snippet] element
+		// may sit at the root too (it renders without an auto-wrapping section).
+		$root_ok = in_array( $type, self::ROOT_TYPES, true )
+			|| ( $type === 'global_section' && self::shortcode_exists( 'global_section' ) )
+			|| ( $type === 'simple' && ( $node['shortcode'] ?? '' ) === 'snippet' );
+
 		// Placement rules.
-		if ( $parent_type === '' && ! in_array( $type, self::ROOT_TYPES, true ) ) {
+		if ( $parent_type === '' && ! $root_ok ) {
 			$errors[] = "$path: a `$type` cannot sit at the page root; wrap it in a flexbox (atts.html_tag = section) or a section.";
 		}
 		if ( $type === 'column' && ! in_array( $parent_type, array( 'section', 'row' ), true ) ) {
@@ -370,6 +376,17 @@ class FW_AI_Schema {
 				'_items'    => array(),
 				'atts'      => (object) $atts,
 			);
+		}
+
+		if ( $type === 'global_section' && self::shortcode_exists( 'global_section' ) ) {
+			if ( $parent_type !== '' ) {
+				$errors[] = "$path: a global_section reference sits at the page root.";
+			}
+			$atts = self::validate_atts( 'global_section', $atts, $path, $errors );
+			if ( empty( $atts['snippet_id'] ) || get_post_type( (int) $atts['snippet_id'] ) !== 'snippet' ) {
+				$errors[] = "$path: global_section needs atts.snippet_id = the id of a Section snippet (see snippets_list).";
+			}
+			return array( 'type' => 'global_section', 'atts' => (object) $atts, '_items' => array() );
 		}
 
 		if ( ! in_array( $type, self::LAYOUT_TYPES, true ) ) {
