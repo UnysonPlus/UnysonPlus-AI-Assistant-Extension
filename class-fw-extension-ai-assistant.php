@@ -14,6 +14,11 @@
  *   includes/class-fw-ai-store.php     builder-tree read/write, AI revisions, paths, outline
  *   includes/class-fw-ai-abilities.php ability categories + abilities
  *   includes/class-fw-ai-mcp.php       MCP server endpoint (tools = the abilities)
+ *   includes/class-fw-ai-panel.php     builder / Live Editor chat panel (REST + backends)
+ *   includes/class-fw-ai-check.php     render-check
+ *   includes/class-fw-ai-local.php     local command-line agent runner (development hosts)
+ *   includes/class-fw-ai-visitor.php   the Chat extension's AI channel for visitors
+ *   static/                            the panel's JS + CSS
  *   views/page.php                     Unyson+ → AI Assistant (status, MCP access, connect an agent)
  *
  * On WordPress without the Abilities API the extension loads, shows its admin page with the
@@ -53,10 +58,16 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		require_once $this->get_path( '/includes/class-fw-ai-store.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-abilities.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-mcp.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-panel.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-check.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-local.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-visitor.php' );
 
 		add_action( 'wp_abilities_api_categories_init', array( 'FW_AI_Abilities', 'register_categories' ) );
 		add_action( 'wp_abilities_api_init', array( 'FW_AI_Abilities', 'register' ) );
 		FW_AI_MCP::init();
+		FW_AI_Panel::init();
+		FW_AI_Visitor::init();
 	}
 
 	/**
@@ -113,6 +124,21 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 			$mode = sanitize_key( wp_unslash( $_POST['mcp_mode'] ?? 'off' ) );
 			update_option( FW_AI_MCP::OPTION_MODE, in_array( $mode, FW_AI_MCP::MODES, true ) ? $mode : 'off', false );
 			$this->notices[] = array( 'success', __( 'MCP access saved.', 'fw' ) );
+			return;
+		}
+
+		if ( 'save_panel' === $action && $this->is_supported() ) {
+			$backend = sanitize_key( wp_unslash( $_POST['panel_backend'] ?? 'auto' ) );
+			update_option( FW_AI_Panel::OPTION_BACKEND, in_array( $backend, array( 'auto', 'wp', 'local', 'off' ), true ) ? $backend : 'auto', false );
+			// The local agent command only exists on development hosts; it is run by the web server,
+			// so it is never accepted (or kept) on a public host.
+			if ( FW_AI_MCP::is_local_host() && isset( $_POST['local_cmd'] ) ) {
+				$cmd = trim( str_replace( array( "
+", "
+" ), ' ', (string) wp_unslash( $_POST['local_cmd'] ) ) );
+				update_option( FW_AI_Panel::OPTION_LOCAL_CMD, $cmd, false );
+			}
+			$this->notices[] = array( 'success', __( 'Builder assistant settings saved.', 'fw' ) );
 			return;
 		}
 

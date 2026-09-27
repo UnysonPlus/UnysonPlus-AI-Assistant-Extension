@@ -1,0 +1,211 @@
+/* AI Assistant (Beta) — builder panel. Scoped to .upw-aip. */
+.upw-aip {
+	--upw-aip-bg: #1d2127;
+	--upw-aip-surface: #262b33;
+	--upw-aip-text: #eef0f3;
+	--upw-aip-muted: #a7afbb;
+	--upw-aip-accent: #7c6cf2;
+	--upw-aip-accent-text: #ffffff;
+	--upw-aip-border: #3a414c;
+	position: fixed;
+	right: 20px;
+	bottom: 20px;
+	z-index: 160000;
+	font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+	color: var(--upw-aip-text);
+}
+
+.upw-aip__launch {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 10px 16px;
+	border: 0;
+	border-radius: 999px;
+	background: var(--upw-aip-accent);
+	color: var(--upw-aip-accent-text);
+	font-weight: 600;
+	cursor: pointer;
+	box-shadow: 0 6px 20px rgba(0, 0, 0, .25);
+}
+.upw-aip__launch:hover { filter: brightness(1.08); }
+.upw-aip__launch:focus-visible,
+.upw-aip button:focus-visible,
+.upw-aip__input:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.upw-aip__launch[hidden] { display: none; }
+
+.upw-aip__panel {
+	display: flex;
+	flex-direction: column;
+	width: min(400px, calc(100vw - 40px));
+	height: min(620px, calc(100vh - 120px));
+	background: var(--upw-aip-bg);
+	border: 1px solid var(--upw-aip-border);
+	border-radius: 14px;
+	box-shadow: 0 16px 48px rgba(0, 0, 0, .35);
+	overflow: hidden;
+}
+.upw-aip__panel[hidden] { display: none; }
+
+.upw-aip__head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 12px 14px;
+	border-bottom: 1px solid var(--upw-aip-border);
+	font-size: 14px;
+}
+.upw-aip__beta {
+	padding: 1px 7px;
+	border-radius: 3px;
+	background: #f0b849;
+	color: #1d2327;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: .04em;
+	text-transform: uppercase;
+}
+.upw-aip__close {
+	margin-left: auto;
+	width: 28px;
+	height: 28px;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--upw-aip-muted);
+	font-size: 20px;
+	line-height: 1;
+	cursor: pointer;
+}
+.upw-aip__close:hover { background: var(--upw-aip-surface); color: var(--upw-aip-text); }
+
+.upw-aip__log {
+	flex: 1;
+	overflow-y: auto;
+	padding: 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.upw-aip__msg {
+	max-width: 92%;
+	padding: 9px 12px;
+	border-radius: 12px;
+	word-wrap: break-word;
+}
+.upw-aip__msg--user {
+	align-self: flex-end;
+	background: var(--upw-aip-accent);
+	color: var(--upw-aip-accent-text);
+}
+.upw-aip__msg--assistant {
+	align-self: flex-start;
+	background: var(--upw-aip-surface);
+}
+.upw-aip__msg--note {
+	align-self: center;
+	max-width: 100%;
+	background: transparent;
+	color: var(--upw-aip-muted);
+	font-size: 12px;
+	text-align: center;
+}
+.upw-aip__msg--note a { color: #b7aefc; }
+.upw-aip.is-busy .upw-aip__msg--note:last-child::after {
+	content: "";
+	display: inline-block;
+	width: 1em;
+	animation: upw-aip-dots 1.2s steps(4, end) infinite;
+	overflow: hidden;
+	vertical-align: bottom;
+}
+@keyframes upw-aip-dots { from { width: 0; } to { width: 1em; } }
+
+.upw-aip__steps {
+	margin: 8px 0 0;
+	padding-left: 18px;
+	color: var(--upw-aip-muted);
+	font-size: 12px;
+}
+.upw-aip__steps li { margin: 2px 0; }
+.upw-aip__meta {
+	margin: 8px 0 2px;
+	color: var(--upw-aip-muted);
+	font-size: 12px;
+}
+.upw-aip .upw-aip__undo {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: #b7aefc;
+	font-size: 12px;
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.upw-aip__starters {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: auto;
+}
+.upw-aip__starter {
+	padding: 8px 12px;
+	border: 1px solid var(--upw-aip-border);
+	border-radius: 10px;
+	background: transparent;
+	color: var(--upw-aip-text);
+	text-align: left;
+	cursor: pointer;
+}
+.upw-aip__starter:hover { background: var(--upw-aip-surface); }
+
+.upw-aip__form {
+	display: flex;
+	gap: 8px;
+	padding: 10px;
+	border-top: 1px solid var(--upw-aip-border);
+}
+.upw-aip__input {
+	flex: 1;
+	min-height: 44px;
+	padding: 8px 10px;
+	border: 1px solid var(--upw-aip-border);
+	border-radius: 10px;
+	background: var(--upw-aip-surface);
+	color: var(--upw-aip-text);
+	font: inherit;
+	resize: none;
+}
+.upw-aip__input::placeholder { color: var(--upw-aip-muted); }
+.upw-aip__send {
+	align-self: flex-end;
+	padding: 9px 14px;
+	border: 0;
+	border-radius: 10px;
+	background: var(--upw-aip-accent);
+	color: var(--upw-aip-accent-text);
+	font-weight: 600;
+	cursor: pointer;
+}
+.upw-aip__send:disabled,
+.upw-aip__input:disabled { opacity: .55; cursor: not-allowed; }
+
+@media (prefers-reduced-motion: reduce) {
+	.upw-aip.is-busy .upw-aip__msg--note:last-child::after { animation: none; width: auto; content: "…"; }
+}
+
+.upw-aip__check {
+	margin-top: 8px;
+	padding: 7px 9px;
+	border-left: 3px solid #3fb950;
+	border-radius: 4px;
+	background: rgba(63, 185, 80, .08);
+	font-size: 12px;
+}
+.upw-aip__check.has-issues { border-left-color: #f0b849; background: rgba(240, 184, 73, .08); }
+.upw-aip__check ul { margin: 4px 0 0; padding-left: 16px; }
+.upw-aip__check li { margin: 2px 0; }
+.upw-aip__check li.is-error { color: #ff8b8b; }
+.upw-aip__check code { padding: 0 3px; background: rgba(255, 255, 255, .08); color: inherit; font-size: 11px; }

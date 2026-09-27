@@ -24,6 +24,48 @@ class FW_AI_Store {
 	const META_REVISION = '_upw_ai_revision';
 	const MAX_REVISIONS = 20;
 
+	/**
+	 * Sandboxed trees, keyed by post id. While a post is sandboxed every read and write goes to
+	 * this in-memory copy instead of the database — used by the builder panel, where the AI edits
+	 * the tree the person has open (unsaved changes included) and the result is handed back to the
+	 * builder, which records it as one undoable step and saves it on Update like a manual edit.
+	 *
+	 * @var array<int, array>
+	 */
+	private static $sandbox = array();
+
+	/** @var array[] Writes made to sandboxed trees during this request: { ability, note }. */
+	private static $log = array();
+
+	/* ------------------------------------------------------------------ *
+	 * Sandbox
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * @param int   $post_id
+	 * @param array $tree
+	 */
+	public static function sandbox( $post_id, array $tree ) {
+		self::$sandbox[ (int) $post_id ] = $tree;
+	}
+
+	/**
+	 * @param int $post_id
+	 * @return bool
+	 */
+	public static function is_sandboxed( $post_id ) {
+		return isset( self::$sandbox[ (int) $post_id ] );
+	}
+
+	/**
+	 * @return array[] The sandbox write log (and clears it).
+	 */
+	public static function take_log() {
+		$log       = self::$log;
+		self::$log = array();
+		return $log;
+	}
+
 	/* ------------------------------------------------------------------ *
 	 * Read
 	 * ------------------------------------------------------------------ */
@@ -33,6 +75,9 @@ class FW_AI_Store {
 	 * @return array The tree (assoc arrays), [] when the page has no builder content.
 	 */
 	public static function get_tree( $post_id ) {
+		if ( isset( self::$sandbox[ (int) $post_id ] ) ) {
+			return self::$sandbox[ (int) $post_id ];
+		}
 		$json = get_post_meta( $post_id, self::META_JSON, true );
 		if ( ! is_string( $json ) || $json === '' ) {
 			$fw   = get_post_meta( $post_id, 'fw_options', true );
@@ -47,6 +92,9 @@ class FW_AI_Store {
 	 * @return bool
 	 */
 	public static function is_builder_active( $post_id ) {
+		if ( isset( self::$sandbox[ (int) $post_id ] ) ) {
+			return true;
+		}
 		$fw = get_post_meta( $post_id, 'fw_options', true );
 		if ( is_array( $fw ) && isset( $fw['page-builder']['builder_active'] ) ) {
 			return (bool) $fw['page-builder']['builder_active'];
@@ -68,6 +116,12 @@ class FW_AI_Store {
 	 * @return int|WP_Error The revision id (meta id) that undoes this write.
 	 */
 	public static function save_tree( $post_id, array $tree, $ability, $note = '' ) {
+		if ( isset( self::$sandbox[ (int) $post_id ] ) ) {
+			// Undo is the builder's own history in sandbox mode, so no revision is stored.
+			self::$sandbox[ (int) $post_id ] = $tree;
+			self::$log[] = array( 'ability' => (string) $ability, 'note' => (string) $note );
+			return 0;
+		}
 		$rev = self::snapshot( $post_id, $ability, $note );
 		if ( is_wp_error( $rev ) ) {
 			return $rev;

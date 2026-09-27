@@ -25,6 +25,28 @@ class FW_AI_MCP {
 	/** Protocol revisions this server speaks, newest first. */
 	const PROTOCOLS = array( '2025-06-18', '2025-03-26', '2024-11-05' );
 
+	/** @var array|null The builder-panel session of the current request, if any. */
+	private static $session = null;
+
+	/**
+	 * A valid builder-panel session named by the X-UPW-AI-Session header: running, and started
+	 * by the user this request authenticated as.
+	 *
+	 * @param WP_REST_Request $request
+	 * @return array|null { id, data }
+	 */
+	private static function session( WP_REST_Request $request ) {
+		$id = (string) $request->get_header( 'x_upw_ai_session' );
+		if ( $id === '' || ! is_user_logged_in() || ! class_exists( 'FW_AI_Panel' ) ) {
+			return null;
+		}
+		$data = FW_AI_Panel::get_session( $id );
+		if ( ! $data || $data['status'] !== 'running' || (int) $data['user'] !== get_current_user_id() ) {
+			return null;
+		}
+		return array( 'id' => preg_replace( '/[^a-z0-9]/', '', strtolower( $id ) ), 'data' => $data );
+	}
+
 	public static function init() {
 		add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) );
 		add_filter( 'rest_pre_serve_request', array( __CLASS__, 'serve_empty_202' ), 10, 4 );
@@ -93,7 +115,12 @@ class FW_AI_MCP {
 	/**
 	 * @return true|WP_Error
 	 */
-	public static function permission() {
+	public static function permission( $request = null ) {
+		// A builder-panel session (local agent backend) is allowed whatever the MCP mode: the
+		// person started it from the builder, and it can only touch that session's sandbox.
+		if ( $request instanceof WP_REST_Request && self::session( $request ) ) {
+			return true;
+		}
 		if ( self::mode() === 'off' ) {
 			return new WP_Error( 'upw_ai_mcp_off', 'MCP access is turned off. Enable it under Unyson+ → AI Assistant.', array( 'status' => 403 ) );
 		}
@@ -116,6 +143,13 @@ class FW_AI_MCP {
 			return new WP_REST_Response( self::error( null, -32700, 'Parse error' ), 400 );
 		}
 
+		$session = self::session( $request );
+		if ( $session ) {
+			self::$session = $session;
+			FW_AI_Store::sandbox( $session['data']['post_id'], (array) $session['data']['tree'] );
+			FW_AI_Store::take_log();
+		}
+
 		$batch    = array_keys( $body ) === range( 0, count( $body ) - 1 ) && $body;
 		$messages = $batch ? $body : array( $body );
 		$replies  = array();
@@ -124,6 +158,14 @@ class FW_AI_MCP {
 			if ( $reply !== null ) {
 				$replies[] = $reply;
 			}
+		}
+
+		if ( $session ) {
+			// Persist the sandboxed tree + the writes made, for the panel's status poll.
+			$data          = FW_AI_Panel::get_session( $session['id'] );
+			$data['tree']  = FW_AI_Store::get_tree( $session['data']['post_id'] );
+			$data['steps'] = array_merge( (array) $data['steps'], FW_AI_Store::take_log() );
+			FW_AI_Panel::put_session( $session['id'], $data );
 		}
 
 		if ( ! $replies ) {
@@ -207,6 +249,7 @@ class FW_AI_MCP {
 				'Start with site_info. Before placing an element call describe_element for it: unknown option ids are rejected.',
 				'Pages are trees of layout items (flexbox / section / column) holding elements (type "simple" + shortcode). Use the `path` values from get_page to address items.',
 				'New pages are drafts unless the user asks otherwise. Every write saves a revision; undo reverts the last one.',
+				'After building, call render_check and fix every error and warning it reports before telling the user you are done.',
 				'Style buttons and cards with Theme Settings presets (list_presets) rather than per-element colors.',
 				self::mode() === 'read' ? 'This connection is READ-ONLY: write tools are not available.' : '',
 			) ),
@@ -219,12 +262,15 @@ class FW_AI_MCP {
 	 * @return WP_Ability[]
 	 */
 	private static function abilities() {
-		$read_only = self::mode() === 'read';
+		$read_only = ! self::$session && self::mode() === 'read';
 		$out       = array();
 		foreach ( wp_get_abilities() as $ability ) {
 			$name = $ability->get_name();
 			if ( strpos( $name, 'unysonplus/' ) !== 0 ) {
 				continue;
+			}
+			if ( self::$session && ! in_array( substr( $name, strlen( 'unysonplus/' ) ), FW_AI_Panel::TOOLS, true ) ) {
+				continue; // A panel session gets the panel's tool set (no create-page / revisions).
 			}
 			$ann = (array) $ability->get_meta_item( 'annotations', array() );
 			if ( $read_only && empty( $ann['readonly'] ) ) {

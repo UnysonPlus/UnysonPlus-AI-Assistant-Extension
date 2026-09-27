@@ -136,15 +136,76 @@ $status_row = static function ( $ok, $label, $detail ) {
 					__( 'MCP access', 'fw' ),
 					$mode === 'off' ? esc_html__( 'Off — agents are refused.', 'fw' ) : ( $mode === 'read' ? esc_html__( 'Read-only.', 'fw' ) : esc_html__( 'Read & write.', 'fw' ) )
 				);
+				$wp_ready = FW_AI_Panel::wp_backend_ready();
 				$status_row(
-					$ai_client,
+					$wp_ready,
 					__( 'WordPress AI Client', 'fw' ),
-					$ai_client
-						? esc_html__( 'Available — used by the builder assistant panel (coming in a later beta).', 'fw' )
-						: esc_html__( 'Not available on this WordPress version (needed only by the upcoming builder panel).', 'fw' )
+					$wp_ready
+						? esc_html__( 'Ready — a provider key is set under Settings → Connectors.', 'fw' )
+						: ( $ai_client
+							? sprintf(
+								/* translators: %s: link to the Connectors screen */
+								esc_html__( 'No provider key yet — add one under %s to use the builder assistant with it.', 'fw' ),
+								'<a href="' . esc_url( admin_url( 'options-connectors.php' ) ) . '">' . esc_html__( 'Settings → Connectors', 'fw' ) . '</a>'
+							)
+							: esc_html__( 'Not available on this WordPress version (WordPress 7 or newer).', 'fw' ) )
+				);
+				$active_backend = FW_AI_Panel::backend();
+				$status_row(
+					$active_backend !== '',
+					__( 'Builder assistant', 'fw' ),
+					$active_backend === 'wp'
+						? esc_html__( 'On — using the WordPress AI Client.', 'fw' )
+						: ( $active_backend === 'local'
+							? esc_html__( 'On — using the local agent command (development only).', 'fw' )
+							: esc_html__( 'Not connected — see "Builder assistant" below.', 'fw' ) )
 				);
 				?>
 			</table>
+		</div>
+	</div>
+
+	<?php
+	$panel_pref = (string) get_option( FW_AI_Panel::OPTION_BACKEND, 'auto' );
+	$local_cmd  = (string) get_option( FW_AI_Panel::OPTION_LOCAL_CMD, '' );
+	$is_local   = FW_AI_MCP::is_local_host();
+	?>
+	<div class="card" style="max-width:60em">
+		<div>
+			<h2 style="padding-left:0"><?php esc_html_e( 'Builder assistant', 'fw' ); ?></h2>
+			<p><?php esc_html_e( 'An "AI Assistant" button in the page builder and the Live Page Editor. It edits the version you have open; nothing is saved until you press Update, and every AI change is one step on the builder\'s Undo.', 'fw' ); ?></p>
+			<?php $form_open( 'save_panel' ); ?>
+				<table class="form-table" role="presentation">
+					<tr>
+						<th scope="row"><label for="upw-ai-panel-backend"><?php esc_html_e( 'AI model', 'fw' ); ?></label></th>
+						<td>
+							<select id="upw-ai-panel-backend" name="panel_backend">
+								<option value="auto" <?php selected( $panel_pref, 'auto' ); ?>><?php esc_html_e( 'Automatic — WordPress AI Client if a key is set, else the local agent', 'fw' ); ?></option>
+								<option value="wp" <?php selected( $panel_pref, 'wp' ); ?>><?php esc_html_e( 'WordPress AI Client (Settings → Connectors)', 'fw' ); ?></option>
+								<?php if ( $is_local ) : ?>
+									<option value="local" <?php selected( $panel_pref, 'local' ); ?>><?php esc_html_e( 'Local agent command (development only)', 'fw' ); ?></option>
+								<?php endif; ?>
+								<option value="off" <?php selected( $panel_pref, 'off' ); ?>><?php esc_html_e( 'Off — hide the builder assistant', 'fw' ); ?></option>
+							</select>
+						</td>
+					</tr>
+					<?php if ( $is_local ) : ?>
+						<tr>
+							<th scope="row"><label for="upw-ai-local-cmd"><?php esc_html_e( 'Local agent command', 'fw' ); ?></label></th>
+							<td>
+								<input type="text" id="upw-ai-local-cmd" name="local_cmd" class="large-text code" value="<?php echo esc_attr( $local_cmd ); ?>"
+									placeholder="<?php esc_attr_e( 'your-agent --mcp-config {mcp_config} < {prompt_file}', 'fw' ); ?>">
+								<p class="description">
+									<?php esc_html_e( 'For a development machine with no provider key: a command-line AI agent installed here that can use an MCP server config file. The web server runs it in the background as its own user.', 'fw' ); ?><br>
+									<?php esc_html_e( 'Placeholders: {mcp_config} — path to a one-off MCP config pointing at this site; {prompt_file} — path to a text file with the instructions and request. The command\'s output becomes the reply.', 'fw' ); ?><br>
+									<?php esc_html_e( 'Only shown and only used on a local development host (localhost, *.local, *.test).', 'fw' ); ?>
+								</p>
+							</td>
+						</tr>
+					<?php endif; ?>
+				</table>
+				<p><?php submit_button( __( 'Save', 'fw' ), 'secondary', 'submit', false ); ?></p>
+			</form>
 		</div>
 	</div>
 

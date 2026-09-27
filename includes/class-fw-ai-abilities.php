@@ -214,6 +214,17 @@ class FW_AI_Abilities {
 
 		/* ---------------- Undo ---------------- */
 
+		self::ability( 'render-check', 'unysonplus-site', array(
+			'label'               => __( 'Check the rendered page', 'fw' ),
+			'description'         => __( 'Renders the page and reports problems a visitor would notice, each with the item path: errors (elements that render nothing, fail, print PHP errors or raw shortcode text, broken images) and warnings (an element whose main icon/image is empty — e.g. an icon_box with no icon shows an empty gap —, text still at its default like a "Submit" button, links to "#", empty layout items, heading-level problems). Call it after every build and fix what it reports before telling the user you are done.', 'fw' ),
+			'input_schema'        => self::schema( array( 'post_id' => array( 'type' => 'integer' ) ), array( 'post_id' ) ),
+			'permission_callback' => self::post_cap( 'edit_post' ),
+			'execute_callback'    => function ( $in ) {
+				return FW_AI_Check::run( (int) $in['post_id'] );
+			},
+			'annotations'         => $read,
+		) );
+
 		self::ability( 'list-revisions', 'unysonplus-undo', array(
 			'label'               => __( 'List AI revisions', 'fw' ),
 			'description'         => __( 'The revisions saved before each AI change to a page, newest first (the newest 20 are kept).', 'fw' ),
@@ -467,7 +478,7 @@ class FW_AI_Abilities {
 	 * @param WP_Post $p
 	 * @return string
 	 */
-	private static function plain_text( WP_Post $p ) {
+	public static function plain_text( WP_Post $p ) {
 		$html = do_shortcode( (string) $p->post_content );
 		$html = preg_replace( '#<(script|style|noscript)\b[^>]*>.*?</\1>#is', ' ', $html );
 		return trim( preg_replace( '/\s+/', ' ', html_entity_decode( wp_strip_all_tags( $html ), ENT_QUOTES, 'UTF-8' ) ) );
@@ -722,6 +733,9 @@ class FW_AI_Abilities {
 	 * @return string '' or a warning that someone has the page open.
 	 */
 	private static function lock_warning( $post_id ) {
+		if ( FW_AI_Store::is_sandboxed( $post_id ) ) {
+			return ''; // The builder panel: the person holding the lock is the one asking.
+		}
 		if ( ! function_exists( 'wp_check_post_lock' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/post.php';
 		}
