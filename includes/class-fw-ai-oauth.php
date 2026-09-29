@@ -158,6 +158,24 @@ class FW_AI_OAuth {
 		register_rest_route( $ns, '/oauth/revoke', array( 'methods' => 'POST', 'permission_callback' => $open, 'callback' => array( __CLASS__, 'rest_revoke' ) ) );
 	}
 
+	/**
+	 * These routes are open by design (OAuth requires it), so each is limited
+	 * per visitor: registration most tightly, since every call creates a client
+	 * and the client list is capped — an unthrottled loop could fill the cap
+	 * and lock legitimate agents out.
+	 *
+	 * @param string $action
+	 * @param int    $limit
+	 * @param int    $window seconds
+	 * @return WP_REST_Response|null a 429 response when over the limit
+	 */
+	private static function rate_limited( $action, $limit, $window ) {
+		if ( function_exists( 'fw_rate_limit_exceeded' ) && fw_rate_limit_exceeded( $action, $limit, $window ) ) {
+			return self::oauth_error( 'temporarily_unavailable', 'Too many requests. Try again later.', 429 );
+		}
+		return null;
+	}
+
 	private static function oauth_error( $error, $description, $status = 400 ) {
 		$r = new WP_REST_Response( array( 'error' => $error, 'error_description' => $description ), $status );
 		$r->header( 'Cache-Control', 'no-store' );
@@ -186,6 +204,9 @@ class FW_AI_OAuth {
 	 * @return WP_REST_Response
 	 */
 	public static function rest_register( WP_REST_Request $r ) {
+		if ( $limited = self::rate_limited( 'upw_ai_oauth_register', 5, HOUR_IN_SECONDS ) ) {
+			return $limited;
+		}
 		$body = $r->get_json_params();
 		$body = is_array( $body ) ? $body : $r->get_params();
 		$uris = array_values( array_filter( (array) ( $body['redirect_uris'] ?? array() ), 'is_string' ) );
@@ -246,6 +267,9 @@ class FW_AI_OAuth {
 	 * @return WP_REST_Response
 	 */
 	public static function rest_token( WP_REST_Request $r ) {
+		if ( $limited = self::rate_limited( 'upw_ai_oauth_token', 30, 600 ) ) {
+			return $limited;
+		}
 		$grant  = (string) $r->get_param( 'grant_type' );
 		$client = (string) $r->get_param( 'client_id' );
 		if ( $grant === 'authorization_code' ) {
@@ -292,6 +316,9 @@ class FW_AI_OAuth {
 	 * @return WP_REST_Response
 	 */
 	public static function rest_revoke( WP_REST_Request $r ) {
+		if ( $limited = self::rate_limited( 'upw_ai_oauth_revoke', 30, 600 ) ) {
+			return $limited;
+		}
 		$tokens = self::tokens();
 		$hash   = hash( 'sha256', (string) $r->get_param( 'token' ) );
 		if ( isset( $tokens[ $hash ] ) ) {
