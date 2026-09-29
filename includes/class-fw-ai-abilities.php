@@ -316,6 +316,41 @@ class FW_AI_Abilities {
 			'annotations'         => array( 'readonly' => false, 'destructive' => true, 'idempotent' => false ),
 		) );
 
+		self::ability( 'replace-text', 'unysonplus-build', array(
+			'label'               => __( 'Find and replace text across the site', 'fw' ),
+			'description'         => __( 'Replaces text everywhere a visitor reads it: page-builder content of every page, post and template (drafts too), titles and excerpts, and Theme Settings text (footer copyright, top bar …). Never touches ids, CSS, colours, icons, images or settings; links / URLs only with include_links: true (use it for a phone number or e-mail in tel: / mailto: links); in HTML only the text between tags. TWO STEPS: a call without apply changes NOTHING and returns a preview (every change with before / after) and a plan code; show the person the preview and call again with apply: <plan> only after they agree. match_case and whole_word default to true. Limit with post_ids / post_types; include_theme_settings: false to leave Theme Settings alone. Every page is saved as a revision first and all of it can be undone.', 'fw' ),
+			'input_schema'        => self::schema( array(
+				'find'                   => array( 'type' => 'string' ),
+				'replace'                => array( 'type' => 'string' ),
+				'match_case'             => array( 'type' => 'boolean', 'default' => true ),
+				'whole_word'             => array( 'type' => 'boolean', 'default' => true ),
+				'include_links'          => array( 'type' => 'boolean', 'default' => false ),
+				'include_theme_settings' => array( 'type' => 'boolean', 'default' => true ),
+				'post_types'             => array( 'type' => 'array', 'items' => array( 'type' => 'string' ) ),
+				'post_ids'               => array( 'type' => 'array', 'items' => array( 'type' => 'integer' ) ),
+				'apply'                  => array( 'type' => 'string', 'description' => 'The plan code from the preview. Only after the person agreed.' ),
+				'skip_posts'             => array( 'type' => 'array', 'items' => array( 'type' => 'integer' ) ),
+			) ),
+			'permission_callback' => self::cap( 'edit_posts' ),
+			'execute_callback'    => array( 'FW_AI_Replace', 'run' ),
+			'annotations'         => array( 'readonly' => false, 'destructive' => false, 'idempotent' => false ),
+		) );
+
+		self::ability( 'visual-check', 'unysonplus-build', array(
+			'label'               => __( 'Compare a page with a source site', 'fw' ),
+			'description'         => __( 'Renders a source / reference page (source_url) and a page of this site (post_id, drafts included, or url; default the home page) in a real browser and compares them: how different they look overall and in which strips, and section by section which items are missing, moved, restyled or re-gridded. Use it after rebuilding or converting a page to see what still differs, fix those, and check again. device: desktop (default), tablet or mobile. Needs the capture service (AI Dev Kit); takes up to a minute.', 'fw' ),
+			'input_schema'        => self::schema( array(
+				'source_url' => array( 'type' => 'string' ),
+				'post_id'    => array( 'type' => 'integer' ),
+				'url'        => array( 'type' => 'string' ),
+				'device'     => array( 'type' => 'string', 'enum' => array( 'desktop', 'tablet', 'mobile' ), 'default' => 'desktop' ),
+				'measured'   => array( 'type' => 'object', 'description' => 'Internal: a capture-service answer the chat panel measured in the browser.' ),
+			), array( 'source_url' ) ),
+			'permission_callback' => self::cap( 'edit_posts' ),
+			'execute_callback'    => array( 'FW_AI_Visual', 'check' ),
+			'annotations'         => $read,
+		) );
+
 		self::ability( 'list-settings-revisions', 'unysonplus-undo', array(
 			'label'               => __( 'List Theme Settings revisions', 'fw' ),
 			'description'         => __( 'The Theme Settings values saved before each AI change, newest first (the newest 20 are kept).', 'fw' ),
@@ -734,7 +769,10 @@ class FW_AI_Abilities {
 
 		$errors = array();
 		$check  = array_diff_key( $given, array_filter( $given, 'is_null' ) );
-		FW_AI_Schema::validate_atts( $tag, $check, FW_AI_Store::path_str( $idx ), $errors );
+		// The validator also normalizes some values (an icon given as "leaf" → the icon object).
+		foreach ( FW_AI_Schema::validate_atts( $tag, $check, FW_AI_Store::path_str( $idx ), $errors ) as $k => $v ) {
+			$atts[ $k ] = $v;
+		}
 		if ( isset( $in['width'] ) ) {
 			if ( $type !== 'column' ) {
 				$errors[] = 'width only applies to a column.';

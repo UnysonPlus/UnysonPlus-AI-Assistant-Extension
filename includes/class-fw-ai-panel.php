@@ -10,17 +10,24 @@
  * changed tree comes back to the browser, which applies it as ONE step on the builder's own
  * undo history. Nothing is saved until the person presses Update / Save — exactly like a manual edit.
  *
- * Two model backends:
- *   wp    — WordPress's AI Client with a provider key from Settings → Connectors (WP 7+). Runs the
- *           tool loop in this request.
- *   local — development hosts only: runs a command-line AI agent installed on this machine (the
- *           command template is set on the AI Assistant screen) in the background, pointed at the
- *           extension's MCP endpoint with a one-off session header. The MCP handler sandboxes the
- *           session's tree the same way, and the panel polls for the result.
+ * Three model backends:
+ *   wp      — WordPress's AI Client with a provider key from Settings → Connectors (WP 7+). Runs the
+ *             tool loop in this request.
+ *   local   — development hosts only: runs a command-line AI agent installed on this machine (the
+ *             command template is set on the AI Assistant screen) in the background, pointed at the
+ *             extension's MCP endpoint with a one-off session header. The MCP handler sandboxes the
+ *             session's tree the same way, and the panel polls for the result.
+ *   browser — free local AI on the EDITOR'S computer: the panel's JavaScript runs the tool loop itself,
+ *             talking to a local model (the AI Dev Kit's capture service, or Ollama directly) on
+ *             localhost — which the browser can reach even when this site is hosted elsewhere — and to
+ *             this site's MCP endpoint (cookie auth + the session header) for the tools. The server
+ *             only opens and closes the session; it never talks to the model.
  *
- *   POST /wp-json/unysonplus-ai/v1/panel/run      { post_id, tree, message, history[] }
- *   POST /wp-json/unysonplus-ai/v1/site/run       { message, history[] }   (site-wide assistant)
- *   GET  /wp-json/unysonplus-ai/v1/panel/status   ?session=…     (local backend only)
+ *   POST /wp-json/unysonplus-ai/v1/panel/run           { post_id, tree, message, history[] }
+ *   POST /wp-json/unysonplus-ai/v1/site/run            { message, history[] }   (site-wide assistant)
+ *   GET  /wp-json/unysonplus-ai/v1/panel/status        ?session=…     (local backend only)
+ *   POST /wp-json/unysonplus-ai/v1/panel/local/start   { post_id, tree, mode }  (browser backend)
+ *   POST /wp-json/unysonplus-ai/v1/panel/local/finish  { session, reply, error } (browser backend)
  *
  * The SITE-WIDE assistant (an ✦ AI Assistant item in the admin bar, on every admin screen that is
  * not a builder screen) has every unysonplus ability — Theme Settings, presets, new pages, templates,
@@ -29,7 +36,11 @@
  */
 class FW_AI_Panel {
 
-	const OPTION_BACKEND   = 'upw_ai_panel_backend';   // auto | wp | local | off
+	const OPTION_BACKEND   = 'upw_ai_panel_backend';   // auto | wp | local | browser | off
+	const OPTION_BROWSER_URL   = 'upw_ai_browser_url';   // the local AI address, as seen from the editor's browser
+	const OPTION_BROWSER_MODEL = 'upw_ai_browser_model'; // optional model tag; blank = the kit's pick
+	const BROWSER_URL_DEFAULT  = 'http://localhost:8787';
+	const BROWSER_ROUNDS       = 14;
 	const OPTION_LOCAL_CMD = 'upw_ai_local_agent_cmd';
 	const OPTION_POSITION  = 'upw_ai_panel_position';  // bottom-right | bottom-left | beside-sidebar
 	const POSITIONS        = array( 'bottom-right', 'bottom-left', 'beside-sidebar' );
@@ -46,6 +57,21 @@ class FW_AI_Panel {
 	);
 
 	/**
+	 * Smaller tool sets for the browser (local model) backend: a 4–14B model picks tools far more
+	 * reliably from a short list, and every tool's schema costs context it does not have much of.
+	 */
+	const BROWSER_PAGE_TOOLS = array(
+		'get-page', 'list-elements', 'describe-element', 'list-presets', 'list-templates', 'apply-template',
+		'insert-items', 'update-element', 'move-element', 'remove-element', 'render-check',
+	);
+	const BROWSER_SITE_TOOLS = array(
+		'site-info', 'list-elements', 'describe-element', 'list-presets', 'list-templates', 'apply-template',
+		'create-page', 'get-page', 'insert-items', 'update-element', 'remove-element', 'render-check',
+		'describe-theme-settings', 'update-theme-settings', 'undo-theme-settings', 'update-site-identity',
+		'visual-check', 'replace-text', 'list-media', 'update-media', 'set-featured-image', 'extract-colors',
+	);
+
+	/**
 	 * The builder panel's tool slugs: its own plus those extensions registered with 'panel' => true.
 	 *
 	 * @return string[]
@@ -55,14 +81,58 @@ class FW_AI_Panel {
 		return array_values( array_unique( array_merge( self::TOOLS, FW_AI_Toolkit::panel_tools() ) ) );
 	}
 
+	/** @var array Where this request came from: { title: the title typed so far, context: FW_AI_Context::text(), focus: the Live Editor's selected element }. */
+	private static $place = array( 'title' => '', 'context' => '', 'focus' => '' );
+
+	/**
+	 * @param WP_REST_Request $r
+	 */
+	private static function take_place( WP_REST_Request $r ) {
+		self::$place = array(
+			'title'   => wp_html_excerpt( trim( wp_strip_all_tags( (string) $r->get_param( 'title' ) ) ), 200, '' ),
+			'context' => self::clip( (string) $r->get_param( 'context' ), 3000 ),
+			// The element the Live Editor has selected (its "Ask AI about this"
+			// button), so "this"/"here" in the message resolve to that item. Plain
+			// text sentence built client-side; capped and tag-stripped here.
+			'focus'   => wp_html_excerpt( trim( wp_strip_all_tags( (string) $r->get_param( 'focus' ) ) ), 600, '…' ),
+		);
+	}
+
+	/**
+	 * @return string The context block for the instructions ('' when none).
+	 */
+	private static function place_text() {
+		$out = self::$place['context'] !== '' ? "\n\n" . self::$place['context'] : '';
+		if ( self::$place['focus'] !== '' ) {
+			$out .= "\n\n" . self::$place['focus'];
+		}
+		return $out;
+	}
+
 	/** @var array[] Successful unysonplus writes during this request: { ability, note, url }. */
 	private static $activity = array();
+
+	/**
+	 * @internal ajax: the launcher has pulsed for these suggestion ids; do not pulse for them again.
+	 *
+	 * Failing quietly is right here: this is cosmetic bookkeeping, and an error would only ever produce one
+	 * extra pulse. It must never interrupt whatever the user is actually doing.
+	 */
+	public static function _ajax_suggestions_seen() {
+		check_ajax_referer( 'upw_ai_suggestions' );
+		if ( ! current_user_can( 'edit_posts' ) || ! class_exists( 'FW_AI_Suggestions' ) ) { wp_send_json_error( array(), 403 ); }
+		$ids = isset( $_POST['ids'] ) ? (array) wp_unslash( $_POST['ids'] ) : array();
+		FW_AI_Suggestions::mark_seen( array_map( 'sanitize_key', $ids ) );
+		wp_send_json_success();
+	}
 
 	public static function init() {
 		add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) );
 		add_action( 'wp_after_execute_ability', array( __CLASS__, 'record_activity' ), 10, 3 );
 		add_action( 'admin_bar_menu', array( __CLASS__, 'admin_bar' ), 95 );
 		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue_admin' ) );
+		// The launcher tells us which suggestion ids it has drawn attention to, so it never does it twice.
+		add_action( 'wp_ajax_upw_ai_suggestions_seen', array( __CLASS__, '_ajax_suggestions_seen' ) );
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_live_editor' ), 50 );
 	}
 
@@ -95,12 +165,32 @@ class FW_AI_Panel {
 	}
 
 	/**
-	 * @return string wp | local | '' (none available)
+	 * The server cannot see whether a local model is running on the editor's computer, so "browser" is
+	 * chosen explicitly — or as Automatic's last resort, where the panel then checks for it and explains
+	 * the setup when nothing answers.
+	 *
+	 * @return string wp | local | browser | '' (off)
 	 */
+	/**
+	 * A reply trimmed to $max characters with tags stripped but LINE BREAKS KEPT (wp_html_excerpt()
+	 * collapses them, which ran every list and paragraph of a reply into one line).
+	 *
+	 * @param string $text
+	 * @param int    $max
+	 * @return string
+	 */
+	public static function clip( $text, $max ) {
+		$text = trim( wp_strip_all_tags( (string) $text ) );
+		return mb_strlen( $text ) > $max ? rtrim( mb_substr( $text, 0, $max ) ) . '…' : $text;
+	}
+
 	public static function backend() {
 		$pref = (string) get_option( self::OPTION_BACKEND, 'auto' );
 		if ( $pref === 'off' ) {
 			return '';
+		}
+		if ( $pref === 'browser' ) {
+			return 'browser';
 		}
 		if ( ( $pref === 'wp' || $pref === 'auto' ) && self::wp_backend_ready() ) {
 			return 'wp';
@@ -108,7 +198,34 @@ class FW_AI_Panel {
 		if ( ( $pref === 'local' || $pref === 'auto' ) && self::local_backend_ready() ) {
 			return 'local';
 		}
+		return $pref === 'auto' ? 'browser' : '';
+	}
+
+	/**
+	 * The "Connected: …" line at the top of the panel, so the person knows which AI is answering. The
+	 * browser backend writes its own line once it has found what runs on the editor's computer.
+	 *
+	 * @param string $backend
+	 * @return string
+	 */
+	private static function backend_label( $backend ) {
+		if ( $backend === 'wp' ) {
+			return __( 'Connected: your AI provider, through WordPress (Settings → Connectors).', 'fw' );
+		}
+		if ( $backend === 'local' ) {
+			return stripos( (string) get_option( self::OPTION_LOCAL_CMD, '' ), 'claude' ) !== false
+				? __( 'Connected: Claude — Claude Code on this computer.', 'fw' )
+				: __( 'Connected: the AI agent command on this computer.', 'fw' );
+		}
 		return '';
+	}
+
+	/**
+	 * @return string The local AI address the editor's browser talks to.
+	 */
+	public static function browser_url() {
+		$url = trim( (string) get_option( self::OPTION_BROWSER_URL, '' ) );
+		return $url !== '' ? untrailingslashit( $url ) : self::BROWSER_URL_DEFAULT;
 	}
 
 	/* ------------------------------------------------------------------ *
@@ -132,11 +249,20 @@ class FW_AI_Panel {
 		if ( ! empty( $ann['readonly'] ) ) {
 			return;
 		}
+		// A preview (replace_text without apply) or a call that did
+		// nothing is not a change, so it is not listed as one.
+		if ( is_array( $result ) && ( ! empty( $result['preview'] ) || ( array_key_exists( 'ok', $result ) && ! $result['ok'] ) ) ) {
+			return;
+		}
 		$note = is_array( $result ) && ! empty( $result['message'] ) ? (string) $result['message'] : ( $ability ? $ability->get_label() : $name );
 		$url  = '';
 		if ( is_array( $result ) && ! empty( $result['post_id'] ) ) {
 			$url = (string) get_edit_post_link( (int) $result['post_id'], 'raw' );
 			$note .= ' — ' . get_the_title( (int) $result['post_id'] );
+		} elseif ( $name === 'unysonplus/replace-text' ) {
+			$url = FW_AI_Changes::url();
+		} elseif ( $name === 'unysonplus/update-site-identity' ) {
+			$url = admin_url( 'options-general.php' );
 		} elseif ( is_array( $result ) && ( isset( $result['changed'] ) || isset( $result['preset'] ) || isset( $result['restored'] ) ) ) {
 			$url = admin_url( 'admin.php?page=fw-settings' );
 		}
@@ -166,12 +292,12 @@ class FW_AI_Panel {
 	public static function enqueue_admin( $hook ) {
 		if ( in_array( $hook, array( 'post.php', 'post-new.php' ), true ) ) {
 			$post = get_post();
-			if ( $post && current_user_can( 'edit_post', $post->ID ) && self::builder_type( $post->post_type ) ) {
+			if ( $post && current_user_can( 'edit_post', $post->ID ) && self::builder_type( $post->post_type ) && FW_AI_Access::can_use() ) {
 				self::enqueue( $post->ID, 'builder' );
 				return;
 			}
 		}
-		if ( current_user_can( 'edit_pages' ) && get_option( self::OPTION_BACKEND, 'auto' ) !== 'off' ) {
+		if ( current_user_can( 'edit_pages' ) && get_option( self::OPTION_BACKEND, 'auto' ) !== 'off' && FW_AI_Access::can_use() ) {
 			self::enqueue( 0, 'site' );
 		}
 	}
@@ -182,7 +308,7 @@ class FW_AI_Panel {
 	 * @param WP_Admin_Bar $bar
 	 */
 	public static function admin_bar( $bar ) {
-		if ( ! is_admin() || ! current_user_can( 'edit_pages' ) || get_option( self::OPTION_BACKEND, 'auto' ) === 'off' ) {
+		if ( ! is_admin() || ! current_user_can( 'edit_pages' ) || get_option( self::OPTION_BACKEND, 'auto' ) === 'off' || ! FW_AI_Access::can_use() ) {
 			return;
 		}
 		$bar->add_node( array(
@@ -230,21 +356,69 @@ class FW_AI_Panel {
 		// Head for the builder: the script must be listening before the builder fires its init event.
 		wp_enqueue_script( 'upw-ai-panel', $ext->get_uri( '/static/js/panel.js' ), array( 'jquery' ), $ver, $host === 'live' );
 		$backend = self::backend();
+		$ctx     = $host === 'site'
+			? FW_AI_Context::for_screen( function_exists( 'get_current_screen' ) ? get_current_screen() : null )
+			: FW_AI_Context::for_post( (int) $post_id );
 		wp_localize_script( 'upw-ai-panel', 'upwAiPanel', array(
 			'host'     => $host,
+			'context'  => FW_AI_Context::text( $ctx ),
+			// Starter IDEAS for this screen / page, chosen by rules from its real state (FW_AI_Context).
+			'ideas'    => $ctx['suggestions'],
+			'history'  => array(
+				'key'      => $ctx['key'],
+				'saved'    => FW_AI_History::get( $ctx['key'] ),
+				'url'      => rest_url( FW_AI_MCP::REST_NS . '/panel/history' ),
+				'clearUrl' => rest_url( FW_AI_MCP::REST_NS . '/panel/history/clear' ),
+			),
 			'position' => self::position(),
 			'postId'   => (int) $post_id,
 			'backend'  => $backend,
+			'backendLabel' => self::backend_label( $backend ),
 			'runUrl'   => rest_url( FW_AI_MCP::REST_NS . ( $host === 'site' ? '/site/run' : '/panel/run' ) ),
 			'pollUrl'  => rest_url( FW_AI_MCP::REST_NS . '/panel/status' ),
+			'local'    => array(
+				'url'       => self::browser_url(),
+				'model'     => (string) get_option( self::OPTION_BROWSER_MODEL, '' ),
+				'startUrl'  => rest_url( FW_AI_MCP::REST_NS . '/panel/local/start' ),
+				'finishUrl' => rest_url( FW_AI_MCP::REST_NS . '/panel/local/finish' ),
+				'mcpUrl'    => FW_AI_MCP::endpoint(),
+				'rounds'    => self::BROWSER_ROUNDS,
+			),
 			'nonce'    => wp_create_nonce( 'wp_rest' ),
-			'setupUrl' => FW_Extension_AI_Assistant::get_page_url(),
+			// Images attached in the chat go to the Media Library (the AI looks at them with view_media).
+			'mediaUrl' => current_user_can( 'upload_files' ) ? rest_url( 'wp/v2/media' ) : '',
+			// SUGGESTIONS queued by other extensions (the queue lives in core, so it is readable whether or
+			// not anything is listening when they are written -- see framework/includes/ai-suggestions.php).
+			'suggestions' => class_exists( 'FW_AI_Suggestions' ) ? array_map( function ( $row ) {
+				return array( 'id' => $row['id'], 'title' => $row['title'], 'prompt' => $row['prompt'] );
+			}, FW_AI_Suggestions::for_user() ) : array(),
+			// Ids this user's launcher has not drawn attention to yet. The launcher pulses ONCE per id:
+			// pulsing on every admin page load for as long as a suggestion lives is the nag we are avoiding.
+			'unseen'   => class_exists( 'FW_AI_Suggestions' ) ? FW_AI_Suggestions::unseen_for_user() : array(),
+			'seenUrl'  => admin_url( 'admin-ajax.php' ),
+			'seenNonce' => wp_create_nonce( 'upw_ai_suggestions' ),
+			// Only for people who can open the settings screen (manage_options); others would get "not allowed".
+			'setupUrl' => current_user_can( 'manage_options' ) ? FW_Extension_AI_Assistant::get_page_url() : '',
+			'changesUrl' => FW_AI_Changes::url(),
 			'l10n'     => array(
 				'title'       => __( 'AI Assistant', 'fw' ),
 				'beta'        => __( 'Beta', 'fw' ),
 				'open'        => __( 'AI Assistant (Beta)', 'fw' ),
 				'placeholder' => __( 'Ask for a change — e.g. "Add a pricing section with three plans"', 'fw' ),
 				'send'        => __( 'Send', 'fw' ),
+				'attach'      => __( 'Attach an image (a screenshot or sketch to build from)', 'fw' ),
+				'moreIdeas'   => __( 'More ideas', 'fw' ),
+				'moreIdeasPrompt' => __( 'Look at where I am (this page or screen) and suggest 4 specific, useful things you could do here with your tools — based on what is actually here, not generic advice. Write each as ONE line starting with "→ " and phrased as a request I could send you, e.g. "→ Add a FAQ section with 5 questions about pricing". Put one short sentence before the list and nothing after it. Do not change anything yet.', 'fw' ),
+				'attachRemove' => __( 'Remove the image', 'fw' ),
+				'attachDefault' => __( 'Build a draft page that looks like this image.', 'fw' ),
+				'attachUploading' => __( 'Uploading the image…', 'fw' ),
+				'attachFailed' => __( 'The image could not be uploaded:', 'fw' ),
+				'attachType'  => __( 'Attach a PNG, JPEG, WebP or GIF image.', 'fw' ),
+				// Element focus chip (Live Editor's "Ask AI about this").
+				'editing'     => __( 'Editing', 'fw' ),
+				'clearFocus'  => __( 'Clear selection', 'fw' ),
+				'askAbout'    => __( 'Ask about this', 'fw' ),
+				'thisElement' => __( 'this element', 'fw' ),
 				'working'     => __( 'Working on it…', 'fw' ),
 				'undo'        => __( 'Undo this change', 'fw' ),
 				'undone'      => __( 'Change undone.', 'fw' ),
@@ -272,6 +446,26 @@ class FW_AI_Panel {
 				'siteDone'    => __( 'Done. New pages stay drafts until you publish them; Theme Settings changes are live — ask me to undo them if needed.', 'fw' ),
 				'siteNoChange' => __( 'Nothing on the site was changed.', 'fw' ),
 				'open_link'   => __( 'Open', 'fw' ),
+				'allChanges'  => __( 'See all AI changes', 'fw' ),
+				'clear'       => __( 'New chat', 'fw' ),
+				'clearTitle'  => __( 'Clear this conversation and start a new one', 'fw' ),
+				'earlier'     => __( 'Applied earlier. To reverse it, use the builder\'s revisions or ask me to undo it.', 'fw' ),
+				/* translators: %s: local model name, e.g. qwen3:8b */
+				'localReady'  => __( 'Local AI on this computer: %s — free and private, but slower and less capable than a cloud model. Best for one section at a time.', 'fw' ),
+				'localNone'   => __( 'No AI model is connected. For free AI on this computer, start the UnysonPlus AI Dev Kit (it runs a local model with Ollama) and reopen this panel — or add a provider key under Settings → Connectors.', 'fw' ),
+				'localNoModel' => __( 'The AI Dev Kit is running but has no model downloaded yet. Open its dashboard (http://localhost:4600) → Settings → Local AI models and pull Qwen3 8B (or Qwen3 4B on a smaller PC).', 'fw' ),
+				'localOllamaDown' => __( 'The AI Dev Kit is running but Ollama is not. Restart the kit with start-converter.bat.', 'fw' ),
+				'localOldKit' => __( 'Your AI Dev Kit is too old for the AI Assistant — update it (capture service 1.11.60 or newer), or set the Local AI address to Ollama (http://localhost:11434).', 'fw' ),
+				'localSlow'   => __( 'The local model took more than five minutes to answer and was stopped. Try a smaller request, or a smaller model (Qwen3 4B) on this computer.', 'fw' ),
+				'localClaude' => __( 'Connected: Claude — your Claude subscription, through the AI Dev Kit on this computer.', 'fw' ),
+				'claudeWorking' => __( 'Claude is working', 'fw' ),
+				'localSafari' => __( 'Safari does not let web pages talk to programs on this computer. Use Chrome, Edge or Firefox for local AI.', 'fw' ),
+				'localRetry'  => __( 'Check again', 'fw' ),
+				'localSettings' => __( 'AI Assistant settings', 'fw' ),
+				/* translators: %s: tool name */
+				'localUsing'  => __( 'Using %s', 'fw' ),
+				'localThinking' => __( 'Thinking', 'fw' ),
+				'localTooMany' => __( 'Stopped after too many steps. Whatever was done so far is below.', 'fw' ),
 			),
 		) );
 	}
@@ -305,6 +499,9 @@ class FW_AI_Panel {
 				'message' => array( 'type' => 'string', 'required' => true ),
 				'tree'    => array( 'type' => 'array', 'default' => array() ),
 				'history' => array( 'type' => 'array', 'default' => array() ),
+				'title'   => array( 'type' => 'string', 'default' => '' ),
+				'context' => array( 'type' => 'string', 'default' => '' ),
+				'focus'   => array( 'type' => 'string', 'default' => '' ),
 			),
 		) );
 		register_rest_route( FW_AI_MCP::REST_NS, '/site/run', array(
@@ -316,6 +513,43 @@ class FW_AI_Panel {
 			'args'                => array(
 				'message' => array( 'type' => 'string', 'required' => true ),
 				'history' => array( 'type' => 'array', 'default' => array() ),
+				'context' => array( 'type' => 'string', 'default' => '' ),
+			),
+		) );
+		register_rest_route( FW_AI_MCP::REST_NS, '/panel/local/start', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'rest_local_start' ),
+			'permission_callback' => function ( WP_REST_Request $r ) {
+				if ( $r->get_param( 'mode' ) === 'site' ) {
+					return current_user_can( 'edit_pages' );
+				}
+				$id = (int) $r->get_param( 'post_id' );
+				return $id && get_post( $id ) && current_user_can( 'edit_post', $id );
+			},
+			'args'                => array(
+				'mode'    => array( 'type' => 'string', 'enum' => array( 'page', 'site' ), 'default' => 'page' ),
+				'post_id' => array( 'type' => 'integer', 'default' => 0 ),
+				'tree'    => array( 'type' => 'array', 'default' => array() ),
+				'title'   => array( 'type' => 'string', 'default' => '' ),
+				'context' => array( 'type' => 'string', 'default' => '' ),
+				'focus'   => array( 'type' => 'string', 'default' => '' ),
+				// agent: true = Claude Code on the editor's computer (via the AI Dev Kit) runs the whole
+				// request against the MCP endpoint, so it gets a temporary Application Password + the prompt.
+				'agent'   => array( 'type' => 'boolean', 'default' => false ),
+				'message' => array( 'type' => 'string', 'default' => '' ),
+				'history' => array( 'type' => 'array', 'default' => array() ),
+			),
+		) );
+		register_rest_route( FW_AI_MCP::REST_NS, '/panel/local/finish', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'rest_local_finish' ),
+			'permission_callback' => function () {
+				return is_user_logged_in();
+			},
+			'args'                => array(
+				'session' => array( 'type' => 'string', 'required' => true ),
+				'reply'   => array( 'type' => 'string', 'default' => '' ),
+				'error'   => array( 'type' => 'string', 'default' => '' ),
 			),
 		) );
 		register_rest_route( FW_AI_MCP::REST_NS, '/panel/status', array(
@@ -335,6 +569,7 @@ class FW_AI_Panel {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function rest_run( WP_REST_Request $r ) {
+		self::take_place( $r );
 		$post_id = (int) $r->get_param( 'post_id' );
 		$message = trim( (string) $r->get_param( 'message' ) );
 		$tree    = (array) $r->get_param( 'tree' );
@@ -348,6 +583,8 @@ class FW_AI_Panel {
 				return rest_ensure_response( self::run_wp( $post_id, $tree, $message, $history ) );
 			case 'local':
 				return rest_ensure_response( self::start_local( $post_id, $tree, $message, $history ) );
+			case 'browser':
+				return new WP_Error( 'upw_ai_browser_backend', 'The local AI backend runs in the browser — use /panel/local/start.', array( 'status' => 400 ) );
 		}
 		return new WP_Error( 'upw_ai_no_backend', 'No AI model is connected. Add a provider key under Settings → Connectors, or configure an agent on the AI Assistant screen.', array( 'status' => 503 ) );
 	}
@@ -359,6 +596,7 @@ class FW_AI_Panel {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function rest_site_run( WP_REST_Request $r ) {
+		self::take_place( $r );
 		$message = trim( (string) $r->get_param( 'message' ) );
 		$history = self::clean_history( (array) $r->get_param( 'history' ) );
 		if ( $message === '' ) {
@@ -417,12 +655,19 @@ class FW_AI_Panel {
 			'  7. Ship check: render_check every page you built and fix what it reports; the menu links every new page; each page has a proper SEO title and description (seo_update_page) when the SEO tools are available.',
 			'Use native options (Theme Settings, element options, presets) before any custom CSS; misc_custom_css is a last resort for something no option expresses — say when you used it.',
 			'To reproduce an EXISTING website, use convert_url (capture first) rather than rebuilding it by hand — only after the person agrees.',
+			'To see how a page still differs from a source or reference site, use visual_check (source_url + post_id): it lists, section by section, what is missing, moved or restyled. Fix those and run it again.',
+			'To change the same text in many places (a company name, phone number, price), use replace_text: preview first, show the person what will change, and apply the plan only after they agree.',
+			'For images: list_media finds them (missing_alt: true for images without alt text) and shows where each is used; look at them with view_media before describing them, then save alt text in batches with update_media. To use a library image in an element, set its image value to { attachment_id, url, alt }.',
+			'To translate a page, call get_page_text, translate every text (keep HTML tags, {{placeholders}}, [shortcodes], URLs and brand names), then translate_page: it creates a draft copy and never changes the original.',
+			'To build a page from a screenshot or sketch (an attached image or a Media Library id): look at it with view_media (size: "large"), list its sections top to bottom, then create a DRAFT page and build it section by section with real elements (describe_element first), using the words from the picture (placeholder text only where it is unreadable) and the site\'s own colours, fonts and presets unless the person asks to match the picture\'s design. Run render_check at the end and say what you could not reproduce.',
+			'Brand kit from a logo: view_media to see it and extract_colors for its exact colours; build a palette (primary, secondary, accent, dark text, light background; text on each colour at 4.5:1 contrast or better — lighten or darken a logo colour when needed), choose a heading + body font pair that suits the logo from the fonts describe_theme_settings offers, and SHOW the kit to the person before applying. After they agree, apply it with update_theme_settings (theme colours, typography) and save_preset (buttons), then say that undo_theme_settings reverts it.',
 			'Before placing an element, call describe_element and use its exact option ids — for list options, only the inner_options keys.',
 			'New pages are drafts unless the person asks you to publish. Theme Settings changes are LIVE immediately; mention that, and that undo_theme_settings can revert them.',
 			'Ask before anything destructive: removing content they wrote, replacing a page, or convert_url (which replaces pages and activates a new child theme) — only call convert_url with confirm: true after they explicitly agree in this conversation.',
 			'If a request is ambiguous, make sensible choices and say what you chose rather than asking many questions.',
+			'Settings → General (site title, tagline, site icon): update_site_identity.',
 			'When done, reply in a few short sentences: what you changed, and anything they should check or do next.',
-		) );
+		) ) . self::place_text();
 	}
 
 	/**
@@ -437,7 +682,7 @@ class FW_AI_Panel {
 			}
 			$out[] = array(
 				'role' => ( $h['role'] ?? '' ) === 'assistant' ? 'assistant' : 'user',
-				'text' => wp_html_excerpt( (string) $h['text'], 4000, '…' ),
+				'text' => self::clip( (string) $h['text'], 4000 ),
 			);
 		}
 		return $out;
@@ -451,9 +696,11 @@ class FW_AI_Panel {
 	 * @return string
 	 */
 	private static function instructions( $post_id, array $tree ) {
-		$post = get_post( $post_id );
+		$post  = get_post( $post_id );
+		$title = self::$place['title'] !== '' ? self::$place['title'] : ( $post && $post->post_status !== 'auto-draft' ? get_the_title( $post ) : '' );
+		$name  = $title !== '' ? 'the page "' . $title . '"' : 'a new page that has no title yet';
 		return implode( "\n", array(
-			'You are the UnysonPlus AI Assistant inside the page builder, editing the page "' . get_the_title( $post ) . '" (post_id ' . $post_id . ').',
+			'You are the UnysonPlus AI Assistant inside the page builder, editing ' . $name . ' (post_id ' . $post_id . ').',
 			'You edit the version the person has OPEN; your changes are applied to their builder and they press Update to keep them, so act directly — do not ask for confirmation for additive changes.',
 			'Always pass post_id ' . $post_id . '. Use the `path` values from the outline below (or get_page) to address items.',
 			'Before placing or changing an element, call describe_element for it: unknown option ids are rejected. Set the options that carry the visual (e.g. an icon_box icon, an image) — an unset one renders as an empty gap.',
@@ -464,7 +711,7 @@ class FW_AI_Panel {
 			'',
 			'Current page outline (JSON):',
 			(string) wp_json_encode( FW_AI_Store::outline( $tree ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ),
-		) );
+		) ) . self::place_text();
 	}
 
 	/* ------------------------------------------------------------------ *
@@ -586,14 +833,7 @@ class FW_AI_Panel {
 			),
 		) ) );
 
-		$prompt = ( $mode === 'site' ? self::site_instructions() : self::instructions( $post_id, $tree ) ) . "\n\nUse only the unysonplus MCP tools.\n";
-		if ( $history ) {
-			$prompt .= "\nConversation so far:\n";
-			foreach ( $history as $h ) {
-				$prompt .= ( $h['role'] === 'assistant' ? 'Assistant: ' : 'User: ' ) . $h['text'] . "\n";
-			}
-		}
-		$prompt .= "\nRequest: " . $message . "\n";
+		$prompt = self::agent_prompt( $mode, $post_id, $tree, $message, $history );
 
 		// The session must exist before the agent's first MCP request arrives.
 		$data = array(
@@ -620,6 +860,28 @@ class FW_AI_Panel {
 		self::put_session( $session, $data );
 
 		return array( 'status' => 'running', 'session' => $session );
+	}
+
+	/**
+	 * The one-shot prompt for a command-line agent (the local agent command, or Claude Code run by the
+	 * AI Dev Kit on the editor's computer): instructions, the conversation so far, the request.
+	 *
+	 * @param string $mode    page | site
+	 * @param int    $post_id
+	 * @param array  $tree
+	 * @param string $message
+	 * @param array  $history
+	 * @return string
+	 */
+	private static function agent_prompt( $mode, $post_id, array $tree, $message, array $history ) {
+		$prompt = ( $mode === 'site' ? self::site_instructions() : self::instructions( $post_id, $tree ) ) . "\n\nUse only the unysonplus MCP tools.\n";
+		if ( $history ) {
+			$prompt .= "\nConversation so far:\n";
+			foreach ( $history as $h ) {
+				$prompt .= ( $h['role'] === 'assistant' ? 'Assistant: ' : 'User: ' ) . $h['text'] . "\n";
+			}
+		}
+		return $prompt . "\nRequest: " . $message . "\n";
 	}
 
 	/**
@@ -679,7 +941,7 @@ class FW_AI_Panel {
 		$result = array(
 			'check'   => $check,
 			'status'  => $ok ? 'done' : 'error',
-			'reply'   => $ok ? wp_html_excerpt( $reply, 4000, '…' ) : ( $expired ? 'The agent did not finish within 10 minutes.' : 'The agent exited without a reply. Check the command on the AI Assistant screen.' ),
+			'reply'   => $ok ? self::clip( $reply, 4000 ) : ( $expired ? 'The agent did not finish within 10 minutes.' : 'The agent exited without a reply. Check the command on the AI Assistant screen.' ),
 			'changed' => (bool) $data['steps'],
 			'tree'    => $data['steps'] ? $data['tree'] : null,
 			'steps'   => $data['steps'],
@@ -694,5 +956,238 @@ class FW_AI_Panel {
 		self::put_session( $session, $data );
 
 		return rest_ensure_response( $result );
+	}
+
+	/* ------------------------------------------------------------------ *
+	 * Backend: local AI in the editor's browser
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * Opens a browser-backend session: the same sandbox the local agent gets, keyed by a one-off id the
+	 * panel sends to the MCP endpoint as X-UPW-AI-Session, limited to the small-model tool set. Returns
+	 * the instructions for the model; the panel fetches the tools with MCP tools/list.
+	 *
+	 * @param WP_REST_Request $r
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function rest_local_start( WP_REST_Request $r ) {
+		if ( self::backend() !== 'browser' ) {
+			return new WP_Error( 'upw_ai_not_browser', 'The builder assistant is not set to local AI.', array( 'status' => 400 ) );
+		}
+		self::take_place( $r );
+		$mode    = $r->get_param( 'mode' ) === 'site' ? 'site' : 'page';
+		$post_id = $mode === 'site' ? 0 : (int) $r->get_param( 'post_id' );
+		$tree    = $mode === 'site' ? array() : (array) $r->get_param( 'tree' );
+		$session = strtolower( wp_generate_password( 24, false ) );
+		if ( $r->get_param( 'agent' ) ) {
+			return self::start_browser_agent( $session, $mode, $post_id, $tree, $r );
+		}
+		self::put_session( $session, array(
+			'mode'    => $mode,
+			'kind'    => 'browser',
+			'tools'   => $mode === 'site' ? self::BROWSER_SITE_TOOLS : self::BROWSER_PAGE_TOOLS,
+			'user'    => get_current_user_id(),
+			'post_id' => $post_id,
+			'tree'    => $tree,
+			'steps'   => array(),
+			'status'  => 'running',
+			'started' => time(),
+			'dir'     => '',
+			'app_pw'  => '',
+		) );
+		return rest_ensure_response( array(
+			'session' => $session,
+			'system'  => $mode === 'site' ? self::browser_site_instructions() : self::instructions( $post_id, $tree ) . "\n\n" . self::browser_rules(),
+		) );
+	}
+
+	/**
+	 * Claude Code on the editor's computer, run by the AI Dev Kit: a session with the panel's usual tool
+	 * set (a Claude-class model does not need the small-model limits), a temporary Application Password
+	 * the agent authenticates with, and the full prompt. The panel hands both to the kit; finish deletes
+	 * the password (and FW_AI_Local::sweep() removes any a closed tab left behind, after 30 minutes).
+	 *
+	 * @param string          $session
+	 * @param string          $mode
+	 * @param int             $post_id
+	 * @param array           $tree
+	 * @param WP_REST_Request $r
+	 * @return WP_REST_Response|WP_Error
+	 */
+	private static function start_browser_agent( $session, $mode, $post_id, array $tree, WP_REST_Request $r ) {
+		$message = trim( (string) $r->get_param( 'message' ) );
+		if ( $message === '' ) {
+			return new WP_Error( 'upw_ai_empty', 'Empty message.', array( 'status' => 400 ) );
+		}
+		if ( ! function_exists( 'wp_is_application_passwords_available' ) || ! wp_is_application_passwords_available() ) {
+			return new WP_Error( 'upw_ai_no_app_passwords', 'Application Passwords are turned off on this site, so Claude cannot connect to it. They need HTTPS (or a local development site).', array( 'status' => 400 ) );
+		}
+		FW_AI_Local::sweep();
+		$user = wp_get_current_user();
+		$pw   = WP_Application_Passwords::create_new_application_password( $user->ID, array(
+			'name' => FW_Extension_AI_Assistant::APP_PASSWORD_NAME . ( $mode === 'site' ? ' — site assistant' : ' — builder panel' ) . ' via the AI Dev Kit (temporary)',
+		) );
+		if ( is_wp_error( $pw ) ) {
+			return $pw;
+		}
+		self::put_session( $session, array(
+			'mode'    => $mode,
+			'kind'    => 'browser',
+			'agent'   => true,
+			'user'    => $user->ID,
+			'post_id' => $post_id,
+			'tree'    => $tree,
+			'steps'   => array(),
+			'status'  => 'running',
+			'started' => time(),
+			'dir'     => '',
+			'app_pw'  => $pw[1]['uuid'],
+		) );
+		return rest_ensure_response( array(
+			'session' => $session,
+			'mcp'     => array(
+				'url'     => FW_AI_MCP::endpoint(),
+				'headers' => array(
+					'Authorization'    => 'Basic ' . base64_encode( $user->user_login . ':' . $pw[0] ),
+					'X-UPW-AI-Session' => $session,
+				),
+			),
+			'prompt'  => self::agent_prompt( $mode, $post_id, $tree, $message, self::clean_history( (array) $r->get_param( 'history' ) ) ),
+		) );
+	}
+
+	/**
+	 * Closes a browser-backend session and returns the same result shape as the other backends (the
+	 * render check, the changed tree, the steps). Changes made before an error are still returned, so
+	 * the person can keep or undo them.
+	 *
+	 * @param WP_REST_Request $r
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function rest_local_finish( WP_REST_Request $r ) {
+		$session = preg_replace( '/[^a-z0-9]/', '', strtolower( (string) $r->get_param( 'session' ) ) );
+		$data    = self::get_session( $session );
+		if ( ! $data || ( $data['kind'] ?? '' ) !== 'browser' || (int) $data['user'] !== get_current_user_id() ) {
+			return new WP_Error( 'upw_ai_no_session', 'Unknown or expired session.', array( 'status' => 404 ) );
+		}
+		$reply = trim( (string) $r->get_param( 'reply' ) );
+		$error = trim( (string) $r->get_param( 'error' ) );
+		$site  = ( $data['mode'] ?? 'page' ) === 'site';
+		$check = null;
+		if ( $data['steps'] && ! $site ) {
+			FW_AI_Store::sandbox( (int) $data['post_id'], (array) $data['tree'] );
+			$check = FW_AI_Check::run( (int) $data['post_id'] );
+		}
+		if ( $error !== '' && ! $data['steps'] ) {
+			$result = array( 'status' => 'error', 'reply' => wp_html_excerpt( $error, 600, '…' ) );
+		} else {
+			if ( $error !== '' ) {
+				$reply = $error;
+			}
+			$result = array(
+				'check'   => $check,
+				'status'  => 'done',
+				'reply'   => $reply !== '' ? self::clip( $reply, 4000 ) : ( $data['steps'] ? 'Done.' : 'I could not finish that — please try rephrasing, or ask for one smaller change at a time.' ),
+				'changed' => (bool) $data['steps'],
+				'tree'    => ( $data['steps'] && ! $site ) ? $data['tree'] : null,
+				'steps'   => $data['steps'],
+			);
+		}
+		if ( ! empty( $data['app_pw'] ) ) {
+			WP_Application_Passwords::delete_application_password( (int) $data['user'], (string) $data['app_pw'] );
+		}
+		delete_transient( self::SESSION_PREFIX . $session );
+		return rest_ensure_response( $result );
+	}
+
+	/**
+	 * Extra rules for a small local model, appended to the page instructions.
+	 *
+	 * @return string
+	 */
+	private static function browser_rules() {
+		return implode( "\n", array(
+			'You are running as a small local model with a short memory, so:',
+			'- Make ONE change at a time: call a tool, read its result, then decide the next step.',
+			'- Never stop to announce what you will do next — just call the next tool. Reply in words only when the whole request is done.',
+			'- A new section needs its content in the SAME insert_items call: the section with its heading and elements in _items.',
+			'- Prefer apply_template (list_templates first) over building a section by hand when a template fits.',
+			'- If a tool returns an error, read it, fix exactly what it names and try again — do not repeat the same call.',
+			'- Keep text short and real (no lorem ipsum). Finish with render_check, then a one-sentence reply.',
+			'',
+			self::browser_recipes(),
+		) );
+	}
+
+	/**
+	 * Ready-made, validated section shapes for a small model to copy instead of exploring schemas
+	 * (every one passes render_check as written). Change the text, the number of items and the emoji;
+	 * keep the structure and the option names.
+	 *
+	 * @return string
+	 */
+	private static function browser_recipes() {
+		$h       = function ( $title, $sub = '' ) {
+			$a = array( 'title' => $title, 'heading' => 'h2' );
+			if ( $sub !== '' ) {
+				$a['subtitle'] = $sub;
+			}
+			return array( 'type' => 'simple', 'shortcode' => 'special_heading', 'atts' => $a );
+		};
+		$section = function ( array $items ) {
+			return array( 'type' => 'flexbox', 'atts' => array( 'html_tag' => 'section', 'display' => 'block' ), '_items' => $items );
+		};
+		$card    = function ( $emoji, $title ) {
+			return array( 'type' => 'simple', 'shortcode' => 'icon_box', 'atts' => array( 'icon' => array( 'type' => 'emoji', 'char' => $emoji ), 'title' => $title, 'content' => '<p>One short sentence.</p>' ) );
+		};
+		$recipes = array(
+			'FAQ'                       => $section( array(
+				$h( 'Frequently asked questions' ),
+				array( 'type' => 'simple', 'shortcode' => 'accordion', 'atts' => array( 'tabs' => array(
+					array( 'tab_title' => 'Question one?', 'tab_content' => '<p>Answer one.</p>' ),
+					array( 'tab_title' => 'Question two?', 'tab_content' => '<p>Answer two.</p>' ),
+				) ) ),
+			) ),
+			'Feature cards (3 columns)' => $section( array(
+				$h( 'Why choose us', 'A short line under the heading.' ),
+				array( 'type' => 'flexbox', 'atts' => array( 'display' => 'grid', 'grid_columns' => '3' ), '_items' => array( $card( '🎈', 'Feature one' ), $card( '🎉', 'Feature two' ), $card( '✨', 'Feature three' ) ) ),
+			) ),
+			'Call to action'            => $section( array(
+				$h( 'Ready to get started?', 'One persuasive line.' ),
+				array( 'type' => 'simple', 'shortcode' => 'button', 'atts' => array( 'label' => 'Get in touch', 'link' => '/contact/' ) ),
+			) ),
+			'Text section'              => $section( array(
+				$h( 'Our story' ),
+				array( 'type' => 'simple', 'shortcode' => 'text_block', 'atts' => array( 'text' => '<p>Two or three short paragraphs.</p>' ) ),
+			) ),
+		);
+		$out = array(
+			'RECIPES — to add a section at the end of the page, call insert_items with exactly two arguments: {"post_id": <id>, "items": [ <one recipe> ]}. Copy a recipe exactly, changing only the text, the emoji and how many questions / cards there are. You do not need describe_element for these.',
+		);
+		foreach ( $recipes as $name => $item ) {
+			$out[] = $name . ': ' . wp_json_encode( $item, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+		}
+		return implode( "\n", $out );
+	}
+
+	/**
+	 * The site-wide instructions for the browser backend (its smaller tool set).
+	 *
+	 * @return string
+	 */
+	private static function browser_site_instructions() {
+		return implode( "\n", array(
+			'You are the UnysonPlus AI Assistant for the WordPress site "' . wp_strip_all_tags( get_bloginfo( 'name' ) ) . '" (' . home_url( '/' ) . '), running as a small local model.',
+			'Your tools can: read the site (site_info), create draft pages (create_page) and fill them (list_templates + apply_template, insert_items with elements from describe_element), and read or change Theme Settings (describe_theme_settings, update_theme_settings; undo_theme_settings reverts).',
+			'Work ONE step at a time: call a tool, read its result, then decide the next step. If a tool returns an error, fix exactly what it names.',
+			'Never stop to announce what you will do next — just call the next tool. Reply in words only when the whole request is done.',
+			'New pages: create_page with a title, then insert_items section by section (the recipes below).',
+			'New pages are drafts. Theme Settings changes are live immediately — say so.',
+			'Ask before removing content the person wrote.',
+			'Site title, tagline and site icon: update_site_identity.',
+			'When done, reply in one to three short sentences saying what you changed.',
+			'',
+			self::browser_recipes(),
+		) ) . self::place_text();
 	}
 }

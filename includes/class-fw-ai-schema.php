@@ -437,6 +437,15 @@ class FW_AI_Schema {
 				$unknown[] = (string) $id;
 				continue;
 			}
+			if ( ( $leaves[ $id ][0]['type'] ?? '' ) === 'icon' && $value !== '' && $value !== null && $value !== array() ) {
+				$icon = self::normalize_icon( $value );
+				if ( is_string( $icon ) ) {
+					$errors[] = "$path ($tag.$id): $icon";
+				} else {
+					$atts[ $id ] = $icon;
+				}
+				continue;
+			}
 			self::check_deep( $leaves[ $id ][0], $value, "$path ($tag.$id)", $errors );
 		}
 		if ( $unknown ) {
@@ -488,6 +497,58 @@ class FW_AI_Schema {
 			return sprintf( 'expected a single value like the default %s, not an object.', wp_json_encode( $opt['value'] ) );
 		}
 		return '';
+	}
+
+	/**
+	 * An icon value in the shape the renderer reads. Models often write a bare name ("leaf") or a font class
+	 * ("fa fa-leaf"): those are turned into the real object when they resolve, because a string renders
+	 * NOTHING (an <i class="leaf"> of 0×0) while the page check still sees a non-empty icon.
+	 *
+	 * @param mixed $value
+	 * @return array|string The icon array, or the problem.
+	 */
+	public static function normalize_icon( $value ) {
+		$hint = 'use an icon object, e.g. {"type":"svg","svg-source":"library","svg-id":"lucide/star"} (Lucide icon names: star, leaf, house, users, phone, mail, check, heart …), {"type":"icon-font","icon-class":"fa fa-star"}, or {"type":"char","char":"★"}.';
+		$exists = function ( $id ) {
+			return function_exists( 'sc_icon_svg_library_markup' ) && (string) sc_icon_svg_library_markup( $id ) !== '';
+		};
+		$svg = function ( $id ) {
+			return array( 'type' => 'svg', 'icon-class' => '', 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false, 'svg-source' => 'library', 'svg-id' => $id );
+		};
+		if ( is_string( $value ) ) {
+			$v = trim( $value );
+			if ( preg_match( '#^[a-z0-9-]+/[a-z0-9-]+$#i', $v ) ) {
+				return $exists( strtolower( $v ) ) ? $svg( strtolower( $v ) ) : 'no library icon "' . $v . '"; ' . $hint;
+			}
+			if ( preg_match( '/^[a-z0-9-]+$/i', $v ) && $exists( 'lucide/' . strtolower( $v ) ) ) {
+				return $svg( 'lucide/' . strtolower( $v ) );
+			}
+			if ( preg_match( '/^(?:fa[srbld]?|dashicons|unycon|bi|ti|la[srb]?)[ -]/', $v ) ) {
+				return array( 'type' => 'icon-font', 'icon-class' => $v, 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false );
+			}
+			if ( mb_strlen( $v ) <= 2 && ! preg_match( '/^[a-z0-9]+$/i', $v ) ) {
+				return array( 'type' => 'char', 'char' => $v );
+			}
+			return '"' . mb_substr( $v, 0, 40 ) . '" is not an icon; ' . $hint;
+		}
+		if ( ! is_array( $value ) ) {
+			return $hint;
+		}
+		$type = (string) ( $value['type'] ?? '' );
+		if ( $type === 'svg' && ( $value['svg-source'] ?? 'library' ) === 'library' ) {
+			$id = strtolower( (string) ( $value['svg-id'] ?? '' ) );
+			if ( $id !== '' && strpos( $id, '/' ) === false ) {
+				$id = 'lucide/' . $id;
+			}
+			if ( $id === '' || ! $exists( $id ) ) {
+				return 'no library icon "' . ( $value['svg-id'] ?? '' ) . '"; ' . $hint;
+			}
+			return array_merge( $svg( $id ), $value, array( 'svg-id' => $id ) );
+		}
+		if ( $type === 'icon-font' && empty( $value['icon-class'] ) ) {
+			return 'icon-font needs icon-class; ' . $hint;
+		}
+		return $value;
 	}
 
 	/** Option types holding a list of rows (each row keyed by the inner options). */

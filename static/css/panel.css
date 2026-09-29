@@ -186,6 +186,7 @@
 
 .upw-aip__form {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 8px;
 	padding: 10px;
 	border-top: 1px solid var(--upw-aip-border);
@@ -213,6 +214,26 @@
 	font-weight: 600;
 	cursor: pointer;
 }
+.upw-aip__side { display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; }
+.upw-aip__attach {
+	display: grid;
+	place-items: center;
+	padding: 7px;
+	border: 1px solid var(--upw-aip-border);
+	border-radius: 10px;
+	background: transparent;
+	color: var(--upw-aip-muted);
+	cursor: pointer;
+}
+.upw-aip__attach:hover, .upw-aip__attach:focus-visible { color: var(--upw-aip-text); border-color: var(--upw-aip-muted); }
+.upw-aip__attached { display: flex; flex-basis: 100%; align-items: center; gap: 8px; order: -1; font-size: 12px; color: var(--upw-aip-muted); }
+.upw-aip__attached[hidden] { display: none; }
+.upw-aip__attached img { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; border: 1px solid var(--upw-aip-border); }
+.upw-aip__attached span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upw-aip__attached-remove { border: 0; background: transparent; color: var(--upw-aip-muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.upw-aip__msg-img { display: block; max-width: 100%; max-height: 160px; margin-bottom: 6px; border-radius: 6px; }
+.upw-aip__starter--more { border-style: dashed; }
+.upw-aip__md .upw-aip__idea { display: block; width: 100%; margin: 6px 0 0; text-align: left; }
 .upw-aip__send:disabled,
 .upw-aip__input:disabled { opacity: .55; cursor: not-allowed; }
 
@@ -239,6 +260,138 @@
 .upw-aip__md p:last-child { margin-bottom: 0; }
 .upw-aip__md-list { margin: 2px 0 8px; padding-left: 18px; list-style: disc; }
 .upw-aip__md-list li { margin: 2px 0; }
+ol.upw-aip__md-list { list-style: decimal; }
+.upw-aip__md-table { margin: 4px 0 8px; overflow-x: auto; }
+.upw-aip__md-table table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.upw-aip__md-table th, .upw-aip__md-table td { min-width: 4.5em; padding: 4px 6px; border-bottom: 1px solid var(--upw-aip-border); text-align: left; vertical-align: top; }
+.upw-aip__md-table th { color: var(--upw-aip-muted); font-weight: 600; }
 .upw-aip__md a, .upw-aip__steps a { color: #b7aefc; }
 .upw-aip__md code { padding: 0 3px; border-radius: 3px; background: rgba(255, 255, 255, .08); font-size: 12px; }
 .upw-aip__more { color: var(--upw-aip-muted); }
+
+/* Local AI status line (browser backend). */
+.upw-aip__local.is-error { color: #fca5a5; }
+/* Two classes: the admin skin's link colour otherwise wins (dim blue on the dark panel). */
+.upw-aip .upw-aip__local .upw-aip__local-retry,
+.upw-aip .upw-aip__local a { color: #c4b5fd; margin-left: 4px; }
+.upw-aip .upw-aip__local a:hover,
+.upw-aip .upw-aip__local .upw-aip__local-retry:hover { color: #ffffff; }
+/* Disabled while no model answers: stay dark. The admin skin greys every disabled field out with
+   !important (body.upa textarea[disabled]), so only a scoped !important keeps the panel's own box. */
+.upw-aip .upw-aip__input:disabled {
+	background: var(--upw-aip-surface) !important;
+	color: var(--upw-aip-muted) !important;
+	border-color: var(--upw-aip-border) !important;
+	opacity: .55;
+	cursor: not-allowed;
+}
+
+/* Queued-suggestion badge on the launcher. The COUNT is the lasting signal; the pulse below only points
+   at it, briefly, and never repeats. */
+.upw-aip__launch { position: relative; }
+
+.upw-aip__badge {
+	background: #d63638;
+	border-radius: 999px;
+	color: #fff;
+	font-size: 11px;
+	font-weight: 700;
+	line-height: 1;
+	min-width: 18px;
+	padding: 3px 5px;
+	position: absolute;
+	right: -4px;
+	text-align: center;
+	top: -6px;
+}
+
+/* A soft accent ring, expanding outward three times. Not a shake -- a shake reads as an error, which is
+   the wrong feeling for an offer of help -- and not a loop, which becomes wallpaper. */
+.upw-aip__launch.is-new {
+	animation: upw-aip-attn 0.85s ease-out 3;
+}
+
+@keyframes upw-aip-attn {
+	0%   { box-shadow: 0 6px 20px rgba(0,0,0,.25), 0 0 0 0 rgba(124,108,242,.55); }
+	70%  { box-shadow: 0 6px 20px rgba(0,0,0,.25), 0 0 0 12px rgba(124,108,242,0); }
+	100% { box-shadow: 0 6px 20px rgba(0,0,0,.25), 0 0 0 0 rgba(124,108,242,0); }
+}
+
+.upw-aip__starter--sugg {
+	border-color: var(--upw-aip-accent);
+	font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	/* Nothing is lost: the badge was carrying the information, the pulse only pointed at it. */
+	.upw-aip__launch.is-new { animation: none; }
+}
+
+/* New chat (clears the saved conversation for this page / screen). */
+.upw-aip .upw-aip__clear {
+	margin-left: auto;
+	padding: 3px 9px;
+	border: 1px solid var(--upw-aip-border);
+	border-radius: 6px;
+	background: transparent;
+	color: var(--upw-aip-muted);
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+.upw-aip .upw-aip__clear:hover { color: var(--upw-aip-text); border-color: var(--upw-aip-muted); }
+.upw-aip .upw-aip__clear[hidden] { display: none; }
+.upw-aip .upw-aip__clear:not([hidden]) + .upw-aip__close { margin-left: 4px; }
+
+/* "Connected: Claude …" — a positive status, not a caveat. */
+.upw-aip .upw-aip__local.is-claude { color: #a7f3d0; }
+.upw-aip .upw-aip__local.is-claude::before { content: "\25CF"; margin-right: 6px; color: #34d399; }
+
+/* ---- Element focus chip (the Live Editor's "Ask AI about this") ----------
+ * Shows which element the next prompt targets, with a clear (×). Sits just
+ * above the input, inside the form. */
+.upw-aip__focus {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0 0 8px;
+	padding: 5px 6px 5px 10px;
+	font-size: 12px;
+	line-height: 1.3;
+	color: var(--upw-aip-text);
+	background: color-mix(in srgb, var(--upw-aip-accent) 16%, var(--upw-aip-surface));
+	border: 1px solid color-mix(in srgb, var(--upw-aip-accent) 45%, var(--upw-aip-border));
+	border-radius: 8px;
+}
+.upw-aip__focus[hidden] { display: none; }
+.upw-aip__focus-spark {
+	color: var(--upw-aip-accent);
+	flex: 0 0 auto;
+	font-size: 13px;
+}
+.upw-aip__focus-text {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--upw-aip-muted);
+}
+.upw-aip__focus-text b { color: var(--upw-aip-text); font-weight: 600; }
+.upw-aip__focus-clear {
+	flex: 0 0 auto;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	line-height: 1;
+	font-size: 15px;
+	color: var(--upw-aip-muted);
+	background: transparent;
+	border: 0;
+	border-radius: 5px;
+	cursor: pointer;
+}
+.upw-aip__focus-clear:hover {
+	color: var(--upw-aip-text);
+	background: color-mix(in srgb, var(--upw-aip-text) 12%, transparent);
+}

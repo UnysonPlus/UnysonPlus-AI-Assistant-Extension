@@ -68,6 +68,15 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		require_once $this->get_path( '/includes/class-fw-ai-settings.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-build.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-toolkit.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-context.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-history.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-changes.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-oauth.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-visual.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-replace.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-media.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-translate.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-access.php' );
 
 		add_action( 'wp_abilities_api_categories_init', array( 'FW_AI_Abilities', 'register_categories' ) );
 		add_action( 'wp_abilities_api_init', array( 'FW_AI_Abilities', 'register' ) );
@@ -75,6 +84,14 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		FW_AI_Panel::init();
 		FW_AI_Visitor::init();
 		FW_AI_Toolkit::init();
+		FW_AI_Context::init();
+		FW_AI_History::init();
+		FW_AI_Changes::init();
+		FW_AI_OAuth::init();
+		FW_AI_Access::init();
+		FW_AI_Visual::init();
+		add_action( 'fw_ai_assistant_register_abilities', array( 'FW_AI_Media', 'register' ) );
+		add_action( 'fw_ai_assistant_register_abilities', array( 'FW_AI_Translate', 'register' ) );
 	}
 
 	/**
@@ -127,6 +144,15 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		$action = sanitize_key( wp_unslash( $_POST['upw_ai_action'] ) );
 		check_admin_referer( 'upw_ai_' . $action );
 
+		if ( 'save_access' === $action ) {
+			$valid = array_keys( wp_roles()->get_names() );
+			$roles = array_values( array_intersect( array_map( 'sanitize_key', (array) wp_unslash( $_POST['roles'] ?? array() ) ), $valid ) );
+			update_option( FW_AI_Access::OPTION_ROLES, $roles, false );
+			update_option( FW_AI_Access::OPTION_ON, empty( $_POST['usage_log'] ) ? 'no' : 'yes', false );
+			$this->notices[] = array( 'success', __( 'Access saved.', 'fw' ) );
+			return;
+		}
+
 		if ( 'save_mode' === $action && $this->is_supported() ) {
 			$mode = sanitize_key( wp_unslash( $_POST['mcp_mode'] ?? 'off' ) );
 			update_option( FW_AI_MCP::OPTION_MODE, in_array( $mode, FW_AI_MCP::MODES, true ) ? $mode : 'off', false );
@@ -135,18 +161,50 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		}
 
 		if ( 'save_panel' === $action && $this->is_supported() ) {
-			$backend = sanitize_key( wp_unslash( $_POST['panel_backend'] ?? 'auto' ) );
-			update_option( FW_AI_Panel::OPTION_BACKEND, in_array( $backend, array( 'auto', 'wp', 'local', 'off' ), true ) ? $backend : 'auto', false );
+			if ( isset( $_POST['panel_backend'] ) ) {
+				$backend = sanitize_key( wp_unslash( $_POST['panel_backend'] ) );
+				update_option( FW_AI_Panel::OPTION_BACKEND, in_array( $backend, array( 'auto', 'wp', 'local', 'browser', 'off' ), true ) ? $backend : 'auto', false );
+			}
 			// The local agent command only exists on development hosts; it is run by the web server,
 			// so it is never accepted (or kept) on a public host.
 			if ( FW_AI_MCP::is_local_host() && isset( $_POST['local_cmd'] ) ) {
-				$cmd = trim( str_replace( array( "", "
-" ), ' ', (string) wp_unslash( $_POST['local_cmd'] ) ) );
+				$cmd = trim( str_replace( array( "\r", "\n" ), ' ', (string) wp_unslash( $_POST['local_cmd'] ) ) );
 				update_option( FW_AI_Panel::OPTION_LOCAL_CMD, $cmd, false );
 			}
-			$position = sanitize_key( wp_unslash( $_POST['panel_position'] ?? FW_AI_Panel::POSITION_DEFAULT ) );
-			update_option( FW_AI_Panel::OPTION_POSITION, in_array( $position, FW_AI_Panel::POSITIONS, true ) ? $position : FW_AI_Panel::POSITION_DEFAULT, false );
-			$this->notices[] = array( 'success', __( 'Builder assistant settings saved.', 'fw' ) );
+			// The local AI address is used by the editor's BROWSER, so localhost is the normal value here.
+			if ( isset( $_POST['browser_url'] ) ) {
+				$burl = trim( (string) wp_unslash( $_POST['browser_url'] ) );
+				$burl = ( $burl !== '' && preg_match( '#^https?://\S+$#i', $burl ) ) ? untrailingslashit( esc_url_raw( $burl, array( 'http', 'https' ) ) ) : '';
+				update_option( FW_AI_Panel::OPTION_BROWSER_URL, $burl, false );
+			}
+			if ( isset( $_POST['browser_model'] ) ) {
+				$bmodel = trim( (string) wp_unslash( $_POST['browser_model'] ) );
+				update_option( FW_AI_Panel::OPTION_BROWSER_MODEL, preg_match( '#^[A-Za-z0-9._:/-]{1,80}$#', $bmodel ) ? $bmodel : '', false );
+			}
+			if ( isset( $_POST['panel_position'] ) ) {
+				$position = sanitize_key( wp_unslash( $_POST['panel_position'] ) );
+				update_option( FW_AI_Panel::OPTION_POSITION, in_array( $position, FW_AI_Panel::POSITIONS, true ) ? $position : FW_AI_Panel::POSITION_DEFAULT, false );
+			}
+			$this->notices[] = array( 'success', isset( $_POST['panel_backend'] ) ? __( 'AI model settings saved.', 'fw' ) : __( 'Saved.', 'fw' ) );
+			return;
+		}
+
+		if ( 'reset' === $action && $this->is_supported() ) {
+			// Back to a fresh install: Automatic model choice, default address and panel position, the local
+			// agent command cleared, and outside AI programs (MCP) switched off. Connections are revoked one by
+			// one in their own list, never in bulk from here.
+			foreach ( array( FW_AI_Panel::OPTION_BACKEND, FW_AI_Panel::OPTION_BROWSER_URL, FW_AI_Panel::OPTION_BROWSER_MODEL, FW_AI_Panel::OPTION_POSITION, FW_AI_Panel::OPTION_LOCAL_CMD ) as $opt ) {
+				delete_option( $opt );
+			}
+			update_option( FW_AI_MCP::OPTION_MODE, 'off', false );
+			delete_option( FW_AI_Access::OPTION_ROLES );
+			delete_option( FW_AI_Access::OPTION_ON );
+			if ( ! empty( $_POST['clear_chats'] ) && class_exists( 'FW_AI_History' ) ) {
+				delete_user_meta( get_current_user_id(), FW_AI_History::META );
+			}
+			$this->notices[] = array( 'success', ! empty( $_POST['clear_chats'] )
+				? __( 'AI Assistant settings reset to their defaults, and your saved conversations cleared.', 'fw' )
+				: __( 'AI Assistant settings reset to their defaults.', 'fw' ) );
 			return;
 		}
 
@@ -187,6 +245,11 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 				$this->notices[] = array( 'success', __( 'Connection revoked.', 'fw' ) );
 			}
 		}
+
+		if ( 'revoke_app' === $action ) {
+			FW_AI_OAuth::revoke_app( get_current_user_id(), sanitize_text_field( wp_unslash( $_POST['client'] ?? '' ) ) );
+			$this->notices[] = array( 'success', __( 'The app was signed out.', 'fw' ) );
+		}
 	}
 
 	/**
@@ -198,9 +261,14 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		if ( ! class_exists( 'WP_Application_Passwords' ) ) {
 			return array();
 		}
+		// One-off passwords the chat panel issues for a single request are not connections: they are
+		// deleted when the request finishes, and any a closed tab left behind are swept here.
+		if ( class_exists( 'FW_AI_Local' ) ) {
+			FW_AI_Local::sweep();
+		}
 		$out = array();
 		foreach ( WP_Application_Passwords::get_user_application_passwords( get_current_user_id() ) as $item ) {
-			if ( strpos( (string) $item['name'], self::APP_PASSWORD_NAME ) === 0 ) {
+			if ( strpos( (string) $item['name'], self::APP_PASSWORD_NAME ) === 0 && strpos( (string) $item['name'], '(temporary)' ) === false ) {
 				$out[] = $item;
 			}
 		}

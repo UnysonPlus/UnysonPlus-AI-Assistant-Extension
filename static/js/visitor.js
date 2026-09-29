@@ -161,7 +161,7 @@
 			b.appendChild( src );
 		}
 		if ( res.handoff ) {
-			handoff( b );
+			handoff( b, res.hours || '' );
 		}
 		history.push( { role: 'user', text: q } );
 		history.push( { role: 'assistant', text: res.reply || '' } );
@@ -171,10 +171,11 @@
 	 * Offer the site's other chat channels (the link channels in the Chat button), with the
 	 * visitor's question carried over where the channel supports a pre-filled message.
 	 */
-	function handoff( b ) {
+	function handoff( b, note ) {
 		var links = document.querySelectorAll( '.upw-chat a.upw-chat-item[href], .upw-chat a.upw-chat-float[href]' );
 		if ( ! links.length ) { return; }
 		var wrap = el( 'div', 'upw-aiv__handoff' );
+		if ( note ) { wrap.appendChild( el( 'p', 'upw-aiv__hours', note ) ); }
 		wrap.appendChild( el( 'span', 'upw-aiv__handoff-label', l.handoff ) );
 		Array.prototype.forEach.call( links, function ( src ) {
 			var a = el( 'a', 'upw-aiv__channel' );

@@ -20,6 +20,16 @@ class FW_AI_MCP {
 
 	const REST_NS     = 'unysonplus-ai/v1';
 	const OPTION_MODE = 'upw_ai_mcp_mode';
+
+	/** @var bool True while a tools/call runs (a tool may then return images as MCP content). */
+	private static $calling = false;
+
+	/**
+	 * @return bool Whether the current ability call came through this MCP server.
+	 */
+	public static function is_calling() {
+		return self::$calling;
+	}
 	const MODES       = array( 'off', 'read', 'write' );
 
 	/** Protocol revisions this server speaks, newest first. */
@@ -121,11 +131,12 @@ class FW_AI_MCP {
 		if ( $request instanceof WP_REST_Request && self::session( $request ) ) {
 			return true;
 		}
-		if ( self::mode() === 'off' ) {
-			return new WP_Error( 'upw_ai_mcp_off', 'MCP access is turned off. Enable it under Unyson+ → AI Assistant.', array( 'status' => 403 ) );
-		}
+		// Signed out comes first: a 401 starts an app's web sign-in, whose consent screen can turn access on.
 		if ( ! is_user_logged_in() ) {
-			return new WP_Error( 'upw_ai_mcp_auth', 'Authenticate with an Application Password (HTTP Basic auth).', array( 'status' => 401 ) );
+			return new WP_Error( 'upw_ai_mcp_auth', 'Sign in: use OAuth (discovery at ' . FW_AI_OAuth::resource_metadata_url() . ') or an Application Password (HTTP Basic auth).', array( 'status' => 401 ) );
+		}
+		if ( self::mode() === 'off' ) {
+			return new WP_Error( 'upw_ai_mcp_off', 'Access for outside AI programs is turned off. Enable it under Unyson+ → AI Assistant → Advanced → Outside AI programs.', array( 'status' => 403 ) );
 		}
 		if ( ! current_user_can( 'edit_posts' ) ) {
 			return new WP_Error( 'upw_ai_mcp_forbidden', 'This user cannot edit content.', array( 'status' => 403 ) );
@@ -261,8 +272,14 @@ class FW_AI_MCP {
 				'After building, call render_check and fix every error and warning it reports before telling the user you are done.',
 				'Building a whole site, follow this order: (1) colours (theme_colors presets by name), (2) typography (heading font, body, h1–h6 scale), (3) container width (general_layout.layout_container_width), (4) button / box / section presets (save_preset), (5) header and footer, with the navigation from menus_create + menus_assign, (6) THEN pages — create_page, apply_template or insert_items section by section with real elements, forms with forms_add, (7) render_check every page, link every page in the menu, set SEO titles / descriptions when the SEO tools exist. Native options and presets before any custom CSS. Theme Settings changes are live immediately (undo_theme_settings reverts them); other extension changes revert with undo_change.',
 				'To reproduce an existing website, use convert_url — only after the user explicitly agrees, because it replaces pages and activates a new child theme.',
+				'To see how a page still differs from a source or reference site, use visual_check (source_url + post_id): it lists, section by section, what is missing, moved or restyled. Fix those and run it again.',
+				'To change the same text in many places (a company name, phone number, price), use replace_text: preview first, show the person what will change, and apply the plan only after they agree.',
+				'For images: list_media finds them (missing_alt: true for images without alt text) and shows where each is used; look at them with view_media before describing them, then save alt text in batches with update_media. To use a library image in an element, set its image value to { attachment_id, url, alt }.',
+				'To translate a page, call get_page_text, translate every text (keep HTML tags, {{placeholders}}, [shortcodes], URLs and brand names), then translate_page: it creates a draft copy and never changes the original.',
+				'To build a page from a screenshot or sketch (an attached image or a Media Library id): look at it with view_media (size: "large"), list its sections top to bottom, then create a DRAFT page and build it section by section with real elements (describe_element first), using the words from the picture (placeholder text only where it is unreadable) and the site\'s own colours, fonts and presets unless the person asks to match the picture\'s design. Run render_check at the end and say what you could not reproduce.',
+				'Brand kit from a logo: view_media to see it and extract_colors for its exact colours; build a palette (primary, secondary, accent, dark text, light background; text on each colour at 4.5:1 contrast or better — lighten or darken a logo colour when needed), choose a heading + body font pair that suits the logo from the fonts describe_theme_settings offers, and SHOW the kit to the person before applying. After they agree, apply it with update_theme_settings (theme colours, typography) and save_preset (buttons), then say that undo_theme_settings reverts it.',
 				'Style buttons and cards with Theme Settings presets (list_presets) rather than per-element colors.',
-				self::mode() === 'read' ? 'This connection is READ-ONLY: write tools are not available.' : '',
+				self::mode() === 'read' || FW_AI_OAuth::read_only() ? 'This connection is READ-ONLY: write tools are not available.' : '',
 			) ),
 		);
 	}
@@ -273,15 +290,20 @@ class FW_AI_MCP {
 	 * @return WP_Ability[]
 	 */
 	private static function abilities() {
-		$read_only = ! self::$session && self::mode() === 'read';
+		$read_only = ! self::$session && ( self::mode() === 'read' || FW_AI_OAuth::read_only() );
 		$out       = array();
 		foreach ( wp_get_abilities() as $ability ) {
 			$name = $ability->get_name();
 			if ( strpos( $name, 'unysonplus/' ) !== 0 ) {
 				continue;
 			}
-			if ( self::$session && ( self::$session['data']['mode'] ?? 'page' ) !== 'site'
-				&& ! in_array( substr( $name, strlen( 'unysonplus/' ) ), FW_AI_Panel::page_tools(), true ) ) {
+			$slug = substr( $name, strlen( 'unysonplus/' ) );
+			if ( self::$session && ! empty( self::$session['data']['tools'] ) ) {
+				if ( ! in_array( $slug, (array) self::$session['data']['tools'], true ) ) {
+					continue; // A session with its own tool list (the browser / local-model backend).
+				}
+			} elseif ( self::$session && ( self::$session['data']['mode'] ?? 'page' ) !== 'site'
+				&& ! in_array( $slug, FW_AI_Panel::page_tools(), true ) ) {
 				continue; // A builder-panel session gets the panel's tool set; a site session gets them all.
 			}
 			$ann = (array) $ability->get_meta_item( 'annotations', array() );
@@ -339,7 +361,9 @@ class FW_AI_MCP {
 		}
 		$ability = $abilities[ $tool ];
 		$args    = isset( $params['arguments'] ) && is_array( $params['arguments'] ) ? $params['arguments'] : array();
-		$result  = $ability->execute( $ability->get_input_schema() ? $args : null );
+		self::$calling = true;
+		$result        = $ability->execute( $ability->get_input_schema() ? $args : null );
+		self::$calling = false;
 
 		if ( is_wp_error( $result ) ) {
 			$data = $result->get_error_data();
@@ -353,10 +377,22 @@ class FW_AI_MCP {
 			) );
 		}
 
+		// A tool may return pictures for the model to look at (view_media): `_images` becomes MCP image
+		// content after the JSON text, and is kept out of the text and structuredContent.
+		$images = array();
+		if ( is_array( $result ) && isset( $result['_images'] ) ) {
+			$images = (array) $result['_images'];
+			unset( $result['_images'] );
+		}
 		$out = array(
 			'content' => array( array( 'type' => 'text', 'text' => (string) wp_json_encode( $result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) ) ),
 			'isError' => false,
 		);
+		foreach ( $images as $img ) {
+			if ( is_array( $img ) && ! empty( $img['data'] ) ) {
+				$out['content'][] = array( 'type' => 'image', 'data' => (string) $img['data'], 'mimeType' => (string) ( $img['mime'] ?? 'image/jpeg' ) );
+			}
+		}
 		if ( is_array( $result ) && $result && array_keys( $result ) !== range( 0, count( $result ) - 1 ) ) {
 			$out['structuredContent'] = $result;
 		}

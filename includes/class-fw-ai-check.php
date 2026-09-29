@@ -301,7 +301,7 @@ class FW_AI_Check {
 	}
 
 	/**
-	 * An icon / media value counts as empty when none of its identifying leaves (class, url, id,
+	 * An icon / media value counts as empty when none of its identifying leaves (class, url, id, char,
 	 * src, svg, code, file, name) holds anything.
 	 *
 	 * @param mixed $v
@@ -322,7 +322,7 @@ class FW_AI_Check {
 			if ( $found || ! is_scalar( $leaf ) || trim( (string) $leaf ) === '' || $leaf === false ) {
 				return;
 			}
-			if ( is_int( $key ) || preg_match( '/class|url|src|svg|code|file|name|attachment|icon|^id$/i', (string) $key ) ) {
+			if ( is_int( $key ) || preg_match( '/class|url|src|svg|code|file|name|attachment|icon|char|^id$/i', (string) $key ) ) {
 				$found = true;
 			}
 		} );
