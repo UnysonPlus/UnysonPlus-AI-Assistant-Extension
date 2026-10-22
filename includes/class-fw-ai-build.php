@@ -271,8 +271,18 @@ class FW_AI_Build {
 		$opts     = array( 'dry_run' => $dry );
 		$rendered = false;
 		$svc      = self::capture_service_url();
-		$health   = wp_remote_get( $svc . '/health', array( 'timeout' => 3 ) );
-		if ( ! is_wp_error( $health ) && (int) wp_remote_retrieve_response_code( $health ) === 200 ) {
+		$given    = (string) ( $in['rendered_html'] ?? '' );
+		if ( $given !== '' ) {
+			// Rendered by the AI Dev Kit on the editor's computer and passed in (a live server cannot
+			// reach that computer). Same input the capture service would have given.
+			if ( stripos( $given, '<html' ) === false && stripos( $given, '<body' ) === false ) {
+				return new WP_Error( 'upw_ai_bad_render', 'rendered_html is not an HTML page. Pass the AI Dev Kit\'s /capture?single=1&html=1 answer for the URL.' );
+			}
+			$opts['rendered_html'] = $given;
+			$rendered              = 'provided';
+		}
+		$health = $rendered ? null : wp_remote_get( $svc . '/health', array( 'timeout' => 3 ) );
+		if ( ! $rendered && ! is_wp_error( $health ) && (int) wp_remote_retrieve_response_code( $health ) === 200 ) {
 			$cap = wp_remote_get( $svc . '/capture?single=1&html=1&url=' . rawurlencode( $url ), array( 'timeout' => 240 ) );
 			if ( ! is_wp_error( $cap ) && (int) wp_remote_retrieve_response_code( $cap ) === 200 ) {
 				$html = (string) wp_remote_retrieve_body( $cap );
@@ -283,6 +293,17 @@ class FW_AI_Build {
 			}
 		}
 
+		// No browser render: a site built by an AI site builder is an empty shell before its scripts
+		// run, so converting the raw HTML would make near-empty pages. Say how to get the render instead.
+		if ( ! $rendered && empty( $in['allow_raw'] ) ) {
+			return array(
+				'ok'              => false,
+				'reason'          => 'service_unreachable',
+				'message'         => 'Nothing was converted. This server cannot reach the capture service (the AI Dev Kit runs on the editor\'s computer), and the raw HTML of most modern sites is an empty shell. Get the rendered page from the kit — GET capture_request.path on the kit (http://localhost:8787 by default) — and call convert_url again with the same arguments plus rendered_html. With the kit\'s convert_site tool, call that instead (it does both steps). Use allow_raw: true only for a plain server-rendered site.',
+				'capture_request' => array( 'path' => '/capture?single=1&html=1&url=' . rawurlencode( $url ) ),
+			);
+		}
+
 		$res = $ext->run_url_conversion( $url, $opts );
 		if ( ! is_array( $res ) || empty( $res['ok'] ) ) {
 			return new WP_Error( 'upw_ai_convert_failed', 'The conversion failed: ' . ( is_array( $res ) ? (string) $res['error'] : 'unknown error' ) );
@@ -290,7 +311,7 @@ class FW_AI_Build {
 		return array(
 			'ok'            => true,
 			'dry_run'       => $dry,
-			'rendered_with' => $rendered ? 'capture service (full browser render)' : 'raw HTML fetch (start the capture service for client-rendered sites)',
+			'rendered_with' => $rendered === 'provided' ? 'AI Dev Kit render (passed in)' : ( $rendered ? 'capture service (full browser render)' : 'raw HTML fetch (allow_raw)' ),
 			'theme'         => (string) $res['theme_name'],
 			'theme_slug'    => (string) $res['theme_slug'],
 			'activated'     => (bool) $res['activated'],

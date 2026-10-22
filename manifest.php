@@ -11,7 +11,7 @@ $manifest['description'] = __(
 	'fw'
 );
 
-$manifest['version']     = '1.0.34';
+$manifest['version']     = '1.0.45';
 $manifest['display']     = true;
 $manifest['standalone']  = true;
 
@@ -47,6 +47,43 @@ $manifest['requires_wp']  = '6.9'; // Abilities API (wp_register_ability) landed
 /**
  * Changelog
  * ---------
+ * 1.0.42 - Files and site structure for an AI without a terminal. New abilities: upload-media
+ *          (an image, SVG, video or PDF into the Media Library from a URL or base64 data, with
+ *          title, alt and caption; SVGs sanitised; undo deletes the upload), child-theme-files
+ *          (list / read / write / delete in the ACTIVE child theme only; preview then confirm;
+ *          every write backed up and undone byte for byte; PHP needs theme-editing rights, file
+ *          editing on, a clean syntax check and the new off-by-default "Let the AI write PHP"
+ *          switch in Settings), install-theme (install or update a theme from a .zip through
+ *          WordPress's Theme_Upgrader; preview reports the version it replaces) and
+ *          reading-settings (front page, posts page, posts per page, permalinks; undoable).
+ *          Undo snapshots gained theme files and uploaded attachments. Also: save_preset finds
+ *          a list's "*_name" field (section styles use style_name), and the value checker
+ *          accepts multi-select lists (border sides).
+ *
+ * 1.0.38 -New ability build-docs: an AI app connected through MCP reads the AI Dev Kit's
+ *          build guidance (index and reading order first, then one doc per call), served from
+ *          the kit's public repository and cached on the site for 12 hours (filter
+ *          fw_ai_build_docs_base to point elsewhere). site-info now also reports each active
+ *          extension's version and the permalink setting. See includes/class-fw-ai-docs.php.
+ *          New ability create-child-theme (FW_AI_Theme, two steps like manage-extension):
+ *          writes a minimal child of the Unyson+ theme and activates it, carrying the active
+ *          theme's menus and logo across; for sites that genuinely need custom code.
+ *
+ * 1.0.36 - The AI can set up and convert a live site. New abilities list-extensions and manage-extension
+ *          (FW_AI_Extensions; administrators only): install (download + activate), activate or
+ *          deactivate an Unyson+ extension through the Extensions manager, in two steps — a preview to
+ *          tell the person, then confirm: true. It never deactivates the AI Assistant or what it needs.
+ *          convert-url takes rendered_html: a live server cannot reach the AI Dev Kit, and a site from
+ *          an AI builder is an empty shell before its scripts run, so the call now refuses to convert
+ *          raw HTML (unless allow_raw) and returns the kit request instead; the AI passes the kit's
+ *          render back. The chat panel's local-AI loop does that from the browser, and the kit's agent
+ *          gets a convert_site tool that renders and sends the page itself (capture service 1.11.97+).
+ *
+ * 1.0.31 - One menu entry. AI Changes and AI Usage are now tabs of Unyson+ → AI Assistant (Settings,
+ *          Changes, Usage) instead of menu items of their own. The screen opens for anyone who can edit
+ *          pages; people who are not administrators see only the Changes tab. The old addresses
+ *          (page=fw-ai-changes, page=fw-ai-usage) redirect to their tab, filters included.
+ *
  * 1.0.29 - Chat visitor extras. Team hours (Chat Button → "AI assistant: team hours", lines such as
  *          "Mon-Fri 09:00-17:00" or "Sat 10am-2pm" in the site's time zone): the visitor model is told
  *          whether the team is in, and a hand-off while it is away carries a note saying when it is back

@@ -354,8 +354,12 @@ ol.upw-aip__md-list { list-style: decimal; }
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	margin: 0 0 8px;
-	padding: 5px 6px 5px 10px;
+	/* Its own full-width line above the input (a "replying to" bar), never a column beside it. */
+	flex: 0 0 100%;
+	order: -2;
+	box-sizing: border-box;
+	margin: 0;
+	padding: 4px 6px 4px 10px;
 	font-size: 12px;
 	line-height: 1.3;
 	color: var(--upw-aip-text);

@@ -147,7 +147,10 @@ class FW_AI_Toolkit {
 	 *                          created_posts?: int[] (undo trashes them), trashed_posts?: int[] (undo restores them),
 	 *                          created_menus?: int[] (nav menu term ids; undo deletes the menu — not re-creatable),
 	 *                          post_fields?: { <post_id>: [ post_title | post_content | post_excerpt | post_status | post_name | menu_order | post_parent ] },
-	 *                          post_terms?: { <post_id>: [ taxonomy, … ] } }
+	 *                          post_terms?: { <post_id>: [ taxonomy, … ] },
+	 *                          created_attachments?: int[] (undo deletes the attachment and its files — not re-creatable),
+	 *                          files?: string[] (absolute paths inside the themes folder; undo restores each file
+	 *                          byte for byte, or deletes it when it did not exist) }
 	 * @param string $ability
 	 * @param string $note
 	 * @return int Revision id (return it as undo_revision_id).
@@ -159,9 +162,21 @@ class FW_AI_Toolkit {
 			'created_posts' => array_map( 'intval', (array) ( $spec['created_posts'] ?? array() ) ),
 			'trashed_posts' => array_map( 'intval', (array) ( $spec['trashed_posts'] ?? array() ) ),
 			'created_menus' => array_map( 'intval', (array) ( $spec['created_menus'] ?? array() ) ),
+			'created_attachments' => array_map( 'intval', (array) ( $spec['created_attachments'] ?? array() ) ),
 			'post_fields'   => array(),
 			'post_terms'    => array(),
+			'files'         => array(),
 		);
+		foreach ( (array) ( $spec['files'] ?? array() ) as $path ) {
+			$rel = self::theme_relative( (string) $path );
+			if ( $rel === '' ) {
+				continue;
+			}
+			$abs = trailingslashit( get_theme_root() ) . $rel;
+			$values['files'][ $rel ] = is_file( $abs )
+				? array( 'exists' => true, 'data' => base64_encode( (string) file_get_contents( $abs ) ) )
+				: array( 'exists' => false, 'data' => '' );
+		}
 		foreach ( (array) ( $spec['post_fields'] ?? array() ) as $post_id => $fields ) {
 			$post = get_post( (int) $post_id );
 			if ( $post ) {
@@ -203,6 +218,23 @@ class FW_AI_Toolkit {
 		) );
 		update_option( self::OPTION_REVISIONS, array_slice( $list, 0, self::MAX_REVISIONS ), false );
 		return $id;
+	}
+
+	/**
+	 * A path inside the themes folder, relative to it ('my-child/style.css'), or '' for anything outside
+	 * (a "..", another folder) — file snapshots never reach beyond themes.
+	 *
+	 * @param string $path
+	 * @return string
+	 */
+	public static function theme_relative( $path ) {
+		$root = wp_normalize_path( trailingslashit( get_theme_root() ) );
+		$path = wp_normalize_path( (string) $path );
+		if ( strpos( $path, '..' ) !== false || strpos( $path, $root ) !== 0 ) {
+			return '';
+		}
+		$rel = ltrim( substr( $path, strlen( $root ) ), '/' );
+		return ( $rel === '' || strpos( $rel, '/' ) === false ) ? '' : $rel;
 	}
 
 	/**
@@ -252,11 +284,33 @@ class FW_AI_Toolkit {
 		// Undoing a creation trashes the post, so undoing the undo must bring it back (and vice versa).
 		$spec['trashed_posts'] = (array) ( $v['created_posts'] ?? array() );
 		$spec['created_posts'] = (array) ( $v['trashed_posts'] ?? array() );
+		$spec['files']         = array();
+		foreach ( array_keys( (array) ( $v['files'] ?? array() ) ) as $rel ) {
+			$spec['files'][] = trailingslashit( get_theme_root() ) . $rel;
+		}
 		$undo = self::snapshot( $spec, 'unysonplus/undo-change', sprintf( 'Before undoing change %d', $rev['id'] ) );
 
 		foreach ( (array) ( $v['created_posts'] ?? array() ) as $pid ) {
 			if ( get_post( (int) $pid ) ) {
 				wp_trash_post( (int) $pid );
+			}
+		}
+		foreach ( (array) ( $v['created_attachments'] ?? array() ) as $att ) {
+			if ( get_post_type( (int) $att ) === 'attachment' ) {
+				wp_delete_attachment( (int) $att, true );
+			}
+		}
+		foreach ( (array) ( $v['files'] ?? array() ) as $rel => $f ) {
+			$rel = self::theme_relative( trailingslashit( get_theme_root() ) . $rel );
+			if ( $rel === '' ) {
+				continue;
+			}
+			$abs = trailingslashit( get_theme_root() ) . $rel;
+			if ( ! empty( $f['exists'] ) ) {
+				wp_mkdir_p( dirname( $abs ) );
+				file_put_contents( $abs, base64_decode( (string) $f['data'] ) );
+			} elseif ( is_file( $abs ) ) {
+				wp_delete_file( $abs );
 			}
 		}
 		foreach ( (array) ( $v['created_menus'] ?? array() ) as $menu_id ) {

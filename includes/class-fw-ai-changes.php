@@ -3,7 +3,7 @@
 }
 
 /**
- * Unyson+ → AI Changes: every change the AI made to the site, newest first, with a way to undo each.
+ * Unyson+ → AI Assistant → Changes: every change the AI made to the site, newest first, with a way to undo each.
  *
  * It reads the three places the assistant already records a change before making it, so nothing new is
  * stored here:
@@ -25,29 +25,16 @@ class FW_AI_Changes {
 	private static $hook = '';
 
 	public static function init() {
-		add_action( 'admin_menu', array( __CLASS__, 'menu' ), 30 );
+		// Shown as the Changes tab of Unyson+ → AI Assistant (no menu entry of its own).
 	}
 
 	/**
 	 * @return string
 	 */
 	public static function url( array $args = array() ) {
-		return add_query_arg( $args, admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
+		return FW_Extension_AI_Assistant::tab_url( 'changes', $args );
 	}
 
-	public static function menu() {
-		self::$hook = (string) add_submenu_page(
-			FW_Extension_AI_Assistant::PARENT_SLUG,
-			__( 'AI Changes', 'fw' ),
-			__( 'AI Changes', 'fw' ),
-			'edit_pages',
-			self::PAGE_SLUG,
-			array( __CLASS__, 'render' )
-		);
-		if ( self::$hook ) {
-			add_action( 'load-' . self::$hook, array( __CLASS__, 'handle' ) );
-		}
-	}
 
 	/* ------------------------------------------------------------------ *
 	 * Collect
@@ -274,28 +261,23 @@ class FW_AI_Changes {
 		);
 		?>
 		<div class="wrap upw-ai-changes">
-			<h1><?php esc_html_e( 'AI Changes', 'fw' ); ?></h1>
+			<?php echo FW_Extension_AI_Assistant::header_html( 'changes' ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
 			<p class="upw-ai-changes__lede"><?php esc_html_e( 'Every change the AI made to your site, newest first. Each one was saved before it was made, so you can undo it here; an undo is saved too, so it can be redone.', 'fw' ); ?></p>
 
 			<?php if ( isset( $messages[ $msg ] ) ) : ?>
 				<div class="notice notice-<?php echo esc_attr( $messages[ $msg ][0] ); ?> is-dismissible"><p><?php echo esc_html( $messages[ $msg ][1] ); ?></p></div>
 			<?php endif; ?>
 
-			<ul class="subsubsub">
-				<?php
-				$links = array();
-				foreach ( $labels as $k => $label ) {
-					$links[] = sprintf(
-						'<li><a href="%s"%s>%s <span class="count">(%d)</span></a>',
-						esc_url( $k ? self::url( array( 'kind' => $k ) ) : self::url() ),
-						$filter === $k ? ' class="current" aria-current="page"' : '',
-						esc_html( $label ),
-						(int) $counts[ $k ]
-					);
-				}
-				echo implode( ' |</li>', $links ) . '</li>'; // phpcs:ignore WordPress.Security.EscapeOutput
-				?>
-			</ul>
+			<?php if ( $counts[''] ) : // Nothing to filter in an empty history. ?>
+				<nav class="upw-ai-filter" aria-label="<?php esc_attr_e( 'Filter changes', 'fw' ); ?>">
+					<span class="upw-ai-filter__label"><?php esc_html_e( 'Show:', 'fw' ); ?></span>
+					<?php foreach ( $labels as $k => $label ) : ?>
+						<a class="upw-ai-filter__chip<?php echo $filter === $k ? ' is-current' : ''; ?>" href="<?php echo esc_url( $k ? self::url( array( 'kind' => $k ) ) : self::url() ); ?>"<?php echo $filter === $k ? ' aria-current="page"' : ''; ?>>
+							<?php echo esc_html( $label ); ?> <span class="upw-ai-filter__count"><?php echo (int) $counts[ $k ]; ?></span>
+						</a>
+					<?php endforeach; ?>
+				</nav>
+			<?php endif; ?>
 
 			<?php if ( ! $rows ) : ?>
 				<div class="upw-ai-changes__empty">
@@ -352,14 +334,21 @@ class FW_AI_Changes {
 		<style>
 			.upw-ai-changes { max-width: 72rem; }
 			.upw-ai-changes__lede { max-width: 70ch; font-size: 14px; color: var(--upa-text2, #3c434a); }
-			.upw-ai-changes .subsubsub { float: none; margin: 0 0 .75rem; }
+			/* Own markup, not WordPress's .subsubsub: the admin skin turns that into floating pills. */
+			.upw-ai-filter { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; clear: both; margin: 0 0 1rem; }
+			.upw-ai-filter__label { margin-right: .2rem; color: var(--upa-text3, #50575e); font-size: 13px; }
+			.upw-ai-changes a.upw-ai-filter__chip { display: inline-flex; align-items: center; gap: .35rem; padding: .25rem .7rem; border: 1px solid var(--upa-border, #dcdcde); border-radius: 999px; background: var(--upa-panel, #fff); color: var(--upa-text2, #3c434a); font-size: 13px; text-decoration: none; }
+			.upw-ai-changes a.upw-ai-filter__chip:hover { border-color: var(--upa-text3, #8c8f94); color: var(--upa-text, #1d2327); }
+			.upw-ai-filter__chip:focus-visible { outline: 2px solid var(--upa-accent, #2271b1); outline-offset: 2px; }
+			.upw-ai-changes a.upw-ai-filter__chip.is-current { border-color: var(--upa-text, #1d2327); background: var(--upa-text, #1d2327); color: var(--upa-panel, #fff); }
+			.upw-ai-filter__count { font-size: 12px; opacity: .75; }
 			.upw-ai-changes__table td { vertical-align: middle; }
 			.upw-ai-changes__when { white-space: nowrap; color: var(--upa-text2, #3c434a); }
 			.upw-ai-changes__action { text-align: right; white-space: nowrap; }
 			.upw-ai-changes__action form { margin: 0; }
 			.upw-ai-changes__tag { display: inline-block; padding: 0 .4rem; border-radius: 4px; background: var(--upa-panel2, #f0f0f1); color: var(--upa-text2, #3c434a); font-size: 12px; font-weight: 600; }
 			.upw-ai-changes__muted { color: var(--upa-text3, #50575e); }
-			.upw-ai-changes__empty { padding: 1.5rem 1.25rem; border: 1px solid var(--upa-border, #dcdcde); border-radius: var(--upa-radius-lg, 8px); background: var(--upa-panel, #fff); max-width: 60ch; }
+			.upw-ai-changes__empty { clear: both; padding: 1.5rem 1.25rem; border: 1px solid var(--upa-border, #dcdcde); border-radius: var(--upa-radius-lg, 8px); background: var(--upa-panel, #fff); max-width: 60ch; }
 			.upw-ai-changes__empty h2 { margin-top: 0; font-size: 15px; }
 		</style>
 		<?php

@@ -39,7 +39,7 @@ class FW_AI_Settings {
 	const UI_TYPES = array( 'html', 'html-full', 'html-fixed', 'preset-loader' );
 
 	/** Keys a preset row may use for its display name, in order of preference. */
-	const NAME_KEYS = array( 'name', 'color_name', 'preset_name', 'title', 'label' );
+	const NAME_KEYS = array( 'name', 'color_name', 'preset_name', 'style_name', 'title', 'label' );
 
 	/** @var array|null id => array( option, path ) */
 	private static $leaves = null;
@@ -352,6 +352,16 @@ class FW_AI_Settings {
 			if ( ( $rows && is_array( $rows[0] ) && array_key_exists( $k, $rows[0] ) ) || isset( self::inner_leaves( $leaves[ $type ][0] )[ $k ] ) ) {
 				$name_key = $k;
 				break;
+			}
+		}
+		if ( $name_key === '' ) {
+			// Lists name their rows differently (section styles use style_name): take the first "*_name" field.
+			$keys = array_merge( ( $rows && is_array( $rows[0] ) ) ? array_keys( $rows[0] ) : array(), array_keys( (array) self::inner_leaves( $leaves[ $type ][0] ) ) );
+			foreach ( $keys as $k ) {
+				if ( is_string( $k ) && substr( $k, -5 ) === '_name' ) {
+					$name_key = $k;
+					break;
+				}
 			}
 		}
 		if ( $name_key === '' ) {

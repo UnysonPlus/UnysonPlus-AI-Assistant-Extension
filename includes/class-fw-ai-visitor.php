@@ -98,13 +98,13 @@ class FW_AI_Visitor {
 			),
 			'chat_ai_log'          => array(
 				'label' => __( 'AI assistant: keep a conversation log', 'fw' ),
-				'desc'  => __( 'Keep visitors\' questions and the answers for 30 days, to review under Unyson+ → AI Usage. Visitors are not identified (only a per-day random tag groups one conversation). Mention it in your privacy policy — a suggested paragraph is added to Settings → Privacy.', 'fw' ),
+				'desc'  => __( 'Keep visitors\' questions and the answers for 30 days, to review under Unyson+ → AI Assistant → Usage. Visitors are not identified (only a per-day random tag groups one conversation). Mention it in your privacy policy — a suggested paragraph is added to Settings → Privacy.', 'fw' ),
 				'type'  => 'switch',
 				'value' => 'no',
 			),
 			'chat_ai_price_in'     => array(
 				'label' => __( 'AI assistant: price per million input tokens', 'fw' ),
-				'desc'  => __( 'Optional, in your currency, from your AI provider\'s price list — used only for the monthly cost estimate on AI Usage.', 'fw' ),
+				'desc'  => __( 'Optional, in your currency, from your AI provider\'s price list — used only for the monthly cost estimate on the Usage tab of the AI Assistant.', 'fw' ),
 				'type'  => 'text',
 				'value' => '',
 			),
@@ -583,7 +583,7 @@ class FW_AI_Visitor {
 	}
 
 	/**
-	 * The visitor-chat part of Unyson+ → AI Usage.
+	 * The visitor-chat part of Unyson+ → AI Assistant → Usage.
 	 */
 	public static function render_usage() {
 		if ( ! fw_ext( 'chat' ) ) {

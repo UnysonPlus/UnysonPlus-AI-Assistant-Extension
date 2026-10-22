@@ -77,6 +77,11 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		require_once $this->get_path( '/includes/class-fw-ai-media.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-translate.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-access.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-docs.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-theme.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-extensions.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-files.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-connection.php' );
 
 		add_action( 'wp_abilities_api_categories_init', array( 'FW_AI_Abilities', 'register_categories' ) );
 		add_action( 'wp_abilities_api_init', array( 'FW_AI_Abilities', 'register' ) );
@@ -92,6 +97,8 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		FW_AI_Visual::init();
 		add_action( 'fw_ai_assistant_register_abilities', array( 'FW_AI_Media', 'register' ) );
 		add_action( 'fw_ai_assistant_register_abilities', array( 'FW_AI_Translate', 'register' ) );
+		add_action( 'fw_ai_assistant_register_abilities', array( 'FW_AI_Extensions', 'register' ) );
+		FW_AI_Files::init();
 	}
 
 	/**
@@ -111,6 +118,54 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 	}
 
 	/* ------------------------------------------------------------------ *
+	 * One screen, three tabs: Settings (administrators), Changes (anyone who can edit pages — they can
+	 * undo the AI's changes to their own pages), Usage (administrators).
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * @param string $tab    settings | changes | usage
+	 * @param array  $args   Extra query args.
+	 * @return string
+	 */
+	public static function tab_url( $tab = 'settings', array $args = array() ) {
+		return add_query_arg( ( $tab === 'settings' ? array() : array( 'tab' => $tab ) ) + $args, self::get_page_url() );
+	}
+
+	/**
+	 * @return string The tab to show, limited to what the current user may see.
+	 */
+	public static function current_tab() {
+		$tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'settings'; // phpcs:ignore WordPress.Security.NonceVerification
+		if ( ! in_array( $tab, array( 'settings', 'changes', 'usage' ), true ) ) {
+			$tab = 'settings';
+		}
+		return current_user_can( 'manage_options' ) ? $tab : 'changes';
+	}
+
+	/**
+	 * The shared title and tab bar every tab prints at its top.
+	 *
+	 * @param string $active
+	 * @return string HTML
+	 */
+	public static function header_html( $active ) {
+		$tabs = array( 'settings' => __( 'Settings', 'fw' ), 'changes' => __( 'Changes', 'fw' ), 'usage' => __( 'Usage', 'fw' ) );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			$tabs = array( 'changes' => $tabs['changes'] );
+		}
+		$html = '<h1 class="upw-ai-title">' . esc_html__( 'AI Assistant', 'fw' ) .
+			' <span class="upw-ai-beta" title="' . esc_attr__( 'This extension is in its trial stage. Every AI change can be undone, but keep backups of anything important.', 'fw' ) . '">' . esc_html__( 'Beta', 'fw' ) . '</span></h1>';
+		if ( count( $tabs ) > 1 ) {
+			$html .= '<nav class="nav-tab-wrapper upw-ai-tabs" aria-label="' . esc_attr__( 'AI Assistant sections', 'fw' ) . '">';
+			foreach ( $tabs as $key => $label ) {
+				$html .= '<a href="' . esc_url( self::tab_url( $key ) ) . '" class="nav-tab' . ( $key === $active ? ' nav-tab-active" aria-current="page' : '' ) . '">' . esc_html( $label ) . '</a>';
+			}
+			$html .= '</nav>';
+		}
+		return $html . '<style>.upw-ai-title{display:flex;align-items:center;gap:.5rem}.upw-ai-beta{padding:.1rem .5rem;border-radius:4px;background:#f0b849;color:#1d2327;font-size:12px;font-weight:600;line-height:1.6;text-transform:uppercase}.upw-ai-tabs{margin-bottom:1rem}</style>';
+	}
+
+	/* ------------------------------------------------------------------ *
 	 * Admin page
 	 * ------------------------------------------------------------------ */
 
@@ -122,12 +177,23 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 			self::PARENT_SLUG,
 			__( 'AI Assistant (Beta)', 'fw' ),
 			__( 'AI Assistant', 'fw' ),
-			'manage_options',
+			'edit_pages', // editors see the Changes tab only; the other tabs check manage_options
 			self::PAGE_SLUG,
 			array( $this, 'render_page' )
 		);
 		if ( $this->page_hook ) {
 			add_action( 'load-' . $this->page_hook, array( $this, '_handle_post' ) );
+		}
+		// The old separate screens (AI Changes, AI Usage) now redirect to their tab, so saved links keep working.
+		foreach ( array( 'fw-ai-changes' => 'changes', 'fw-ai-usage' => 'usage' ) as $old => $tab ) {
+			$hook = add_submenu_page( 'fw-ai-hidden', '', '', 'edit_pages', $old, '__return_null' );
+			if ( $hook ) {
+				add_action( 'load-' . $hook, function () use ( $tab ) {
+					$args = array_diff_key( wp_unslash( $_GET ), array( 'page' => 1 ) ); // phpcs:ignore WordPress.Security.NonceVerification
+					wp_safe_redirect( self::tab_url( $tab, array_map( 'sanitize_text_field', $args ) ) );
+					exit;
+				} );
+			}
 		}
 	}
 
@@ -138,17 +204,37 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 	 * @internal
 	 */
 	public function _handle_post() {
+		$tab = self::current_tab();
+		if ( $tab === 'changes' ) {
+			FW_AI_Changes::handle();
+			return;
+		}
+		if ( $tab === 'usage' ) {
+			FW_AI_Access::handle();
+			return;
+		}
 		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || empty( $_POST['upw_ai_action'] ) || ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
 		$action = sanitize_key( wp_unslash( $_POST['upw_ai_action'] ) );
 		check_admin_referer( 'upw_ai_' . $action );
 
+		// Settings → Outside AI programs → Check the connection (and its one fix it can make itself).
+		if ( 'check_connection' === $action || 'fix_permalinks' === $action ) {
+			$fixed = 'fix_permalinks' === $action ? FW_AI_Connection::fix_permalinks() : null;
+			FW_AI_Connection::$result = FW_AI_Connection::run();
+			if ( $fixed && $fixed['level'] !== 'ok' ) {
+				array_unshift( FW_AI_Connection::$result['items'], $fixed );
+			}
+			return;
+		}
+
 		if ( 'save_access' === $action ) {
 			$valid = array_keys( wp_roles()->get_names() );
 			$roles = array_values( array_intersect( array_map( 'sanitize_key', (array) wp_unslash( $_POST['roles'] ?? array() ) ), $valid ) );
 			update_option( FW_AI_Access::OPTION_ROLES, $roles, false );
 			update_option( FW_AI_Access::OPTION_ON, empty( $_POST['usage_log'] ) ? 'no' : 'yes', false );
+			update_option( FW_AI_Files::OPTION_PHP, empty( $_POST['theme_php'] ) ? 'no' : 'yes', false );
 			$this->notices[] = array( 'success', __( 'Access saved.', 'fw' ) );
 			return;
 		}
@@ -198,6 +284,7 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 			}
 			update_option( FW_AI_MCP::OPTION_MODE, 'off', false );
 			delete_option( FW_AI_Access::OPTION_ROLES );
+			delete_option( FW_AI_Files::OPTION_PHP );
 			delete_option( FW_AI_Access::OPTION_ON );
 			if ( ! empty( $_POST['clear_chats'] ) && class_exists( 'FW_AI_History' ) ) {
 				delete_user_meta( get_current_user_id(), FW_AI_History::META );
@@ -279,6 +366,15 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 	 * @internal
 	 */
 	public function render_page() {
+		$tab = self::current_tab();
+		if ( $tab === 'changes' ) {
+			FW_AI_Changes::render();
+			return;
+		}
+		if ( $tab === 'usage' ) {
+			FW_AI_Access::render();
+			return;
+		}
 		echo $this->render_view( 'page', array(
 			'ext'            => $this,
 			'new_connection' => $this->new_connection,

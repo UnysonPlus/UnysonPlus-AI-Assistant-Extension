@@ -14,7 +14,7 @@
  *
  * Usage log: option upw_ai_usage_log, the newest 500 requests — when, who, where, through what, and
  * the first 200 characters of what was asked (or, for an outside program, the tool it called). Admin
- * only (Unyson+ → AI Usage); can be switched off (upw_ai_usage_on) and cleared.
+ * only (Unyson+ → AI Assistant → Usage); can be switched off (upw_ai_usage_on) and cleared.
  */
 class FW_AI_Access {
 
@@ -26,7 +26,7 @@ class FW_AI_Access {
 
 	public static function init() {
 		add_filter( 'rest_request_before_callbacks', array( __CLASS__, 'gate' ), 10, 3 );
-		add_action( 'admin_menu', array( __CLASS__, 'menu' ), 30 );
+		// The usage screen is the Usage tab of Unyson+ → AI Assistant (no menu entry of its own).
 	}
 
 	/* ------------------------------------------------------------------ *
@@ -156,15 +156,9 @@ class FW_AI_Access {
 	 * ------------------------------------------------------------------ */
 
 	public static function url() {
-		return admin_url( 'admin.php?page=' . self::PAGE_SLUG );
+		return FW_Extension_AI_Assistant::tab_url( 'usage' );
 	}
 
-	public static function menu() {
-		$hook = add_submenu_page( FW_Extension_AI_Assistant::PARENT_SLUG, __( 'AI Usage', 'fw' ), __( 'AI Usage', 'fw' ), 'manage_options', self::PAGE_SLUG, array( __CLASS__, 'render' ) );
-		if ( $hook ) {
-			add_action( 'load-' . $hook, array( __CLASS__, 'handle' ) );
-		}
-	}
 
 	public static function handle() {
 		if ( 'POST' === ( $_SERVER['REQUEST_METHOD'] ?? '' ) && ! empty( $_POST['upw_ai_visitor_log_clear'] ) && current_user_can( 'manage_options' ) ) {
@@ -216,14 +210,14 @@ class FW_AI_Access {
 		$fmt = get_option( 'date_format' ) . ' ' . get_option( 'time_format' );
 		?>
 		<div class="wrap upw-ai-usage">
-			<h1><?php esc_html_e( 'AI Usage', 'fw' ); ?></h1>
+			<?php echo FW_Extension_AI_Assistant::header_html( 'usage' ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
 			<p class="description">
 				<?php
 				printf(
 					/* translators: 1: number of entries kept, 2: link to the settings */
 					esc_html__( 'What the AI Assistant was asked, newest first (the last %1$d requests are kept). Who may use it is set under %2$s.', 'fw' ),
 					(int) self::MAX_LOG,
-					'<a href="' . esc_url( FW_Extension_AI_Assistant::get_page_url() . '#upw-ai-access' ) . '">' . esc_html__( 'AI Assistant → Advanced → Who can use it', 'fw' ) . '</a>'
+					'<a href="' . esc_url( FW_Extension_AI_Assistant::get_page_url() . '#upw-ai-access' ) . '">' . esc_html__( 'Settings → Advanced → Who can use it', 'fw' ) . '</a>'
 				);
 				?>
 			</p>

@@ -467,6 +467,20 @@ class FW_AI_Schema {
 
 		if ( in_array( $type, array( 'select', 'short-select', 'radio', 'image-picker' ), true ) ) {
 			$choices = self::flat_choices( $opt['choices'] ?? array() );
+			// A multi-select (border sides …) holds a LIST of choices: check each one.
+			if ( ! empty( $opt['multiple'] ) ) {
+				if ( $value === '' || $value === null ) {
+					return '';
+				}
+				if ( ! is_array( $value ) ) {
+					$value = array( $value );
+				}
+				$bad = $choices ? array_diff( array_map( 'strval', array_filter( array_values( $value ), 'is_scalar' ) ), array_map( 'strval', array_keys( $choices ) ) ) : array();
+				if ( count( array_filter( array_values( $value ), 'is_scalar' ) ) !== count( $value ) ) {
+					return sprintf( 'expected a list of these values: %s.', implode( ', ', array_slice( array_keys( $choices ), 0, 30 ) ) );
+				}
+				return $bad ? sprintf( '"%s" is not an allowed value (allowed: %s).', implode( '", "', $bad ), implode( ', ', array_slice( array_keys( $choices ), 0, 30 ) ) ) : '';
+			}
 			if ( $choices && is_array( $value ) ) {
 				return sprintf( 'expected ONE of these values, not an object: %s.', implode( ', ', array_slice( array_keys( $choices ), 0, 30 ) ) );
 			}

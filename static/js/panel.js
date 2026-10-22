@@ -815,7 +815,10 @@
 			if ( s && s.claude ) { return s; }
 			if ( ! s || typeof s.up === 'undefined' ) { throw new Error( 'not the kit' ); }
 			if ( ! s.up ) { throw new Error( l.localOllamaDown ); }
-			var model = pickModel( s.pulled || [], s.selected || '' );
+			// A selected model that is not among the downloaded ones is the kit's hosted endpoint model
+			// (an OpenAI-compatible provider): send it as is, or a downloaded model would replace it.
+			var pulled = s.pulled || [];
+			var model = ( s.selected && pulled.indexOf( s.selected ) < 0 ) ? s.selected : pickModel( pulled, s.selected || '' );
 			if ( ! model ) { throw new Error( l.localNoModel ); }
 			return { kind: 'kit', base: base, model: model };
 		} ).catch( function ( e ) {
@@ -1002,6 +1005,18 @@
 				// visual_check on a live site: the server cannot reach the kit on this computer, but this
 				// browser can. Run the measurement here and hand it back to the ability to summarize.
 				var sc0 = r && r.result && r.result.structuredContent;
+				// convert_url on a live site: same idea — this browser fetches the kit's render of the page.
+				if ( name === 'convert_url' && sc0 && sc0.reason === 'service_unreachable' && sc0.capture_request && ! args.rendered_html ) {
+					var kitc = String( ( cfg.local && cfg.local.url ) || 'http://localhost:8787' ).replace( /\/+$/, '' );
+					return fetch( kitc + sc0.capture_request.path ).then( function ( resp ) {
+						if ( ! resp.ok ) { throw new Error( 'HTTP ' + resp.status ); }
+						return resp.text();
+					} ).then( function ( html ) {
+						return mcp( session, 'tools/call', { name: name, arguments: $.extend( {}, args, { rendered_html: html } ) } );
+					}, function () {
+						return r;
+					} );
+				}
 				if ( name === 'visual_check' && sc0 && sc0.reason === 'service_unreachable' && sc0.verify_request && ! args.measured ) {
 					var kit = String( ( cfg.local && cfg.local.url ) || 'http://localhost:8787' ).replace( /\/+$/, '' );
 					return fetchJson( kit + sc0.verify_request.path, {

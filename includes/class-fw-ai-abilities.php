@@ -53,7 +53,7 @@ class FW_AI_Abilities {
 
 		self::ability( 'site-info', 'unysonplus-site', array(
 			'label'               => __( 'Site info', 'fw' ),
-			'description'         => __( 'Start here. Returns the site name, tagline, URL, WordPress version, active theme, active UnysonPlus extensions, the post types the page builder supports, and up to 100 pages (id, title, status, url, whether each is a builder page).', 'fw' ),
+			'description'         => __( 'Start here. Returns the site name, tagline, URL, WordPress version, the Unyson+ version, active theme, active Unyson+ extensions with their versions, the permalink setting, the post types the page builder supports, and up to 100 pages (id, title, status, url, whether each is a builder page). For how to build, read build_docs.', 'fw' ),
 			'permission_callback' => self::cap( 'edit_posts' ),
 			'execute_callback'    => array( __CLASS__, 'site_info' ),
 			'annotations'         => $read,
@@ -303,11 +303,13 @@ class FW_AI_Abilities {
 
 		self::ability( 'convert-url', 'unysonplus-build', array(
 			'label'               => __( 'Convert a website into this site', 'fw' ),
-			'description'         => __( 'Runs the Site Converter on a URL: generates and ACTIVATES a child theme with the source\'s design, writes Theme Settings, and creates or REPLACES pages with the same slugs (it can also set the front page). Uses the capture service for a full browser render when it is running. Never run it without the user\'s explicit agreement: the first call without confirm: true only explains the impact; dry_run: true tests the pipeline without changing the site.', 'fw' ),
+			'description'         => __( 'Runs the Site Converter on a URL: generates and ACTIVATES a child theme with the source\'s design, writes Theme Settings, and creates or REPLACES pages with the same slugs (it can also set the front page). It needs the page as a real browser renders it: the capture service (AI Dev Kit) renders it when this server can reach it; otherwise pass rendered_html (the kit\'s /capture?single=1&html=1 answer for the URL) — the call says so and gives the exact request when it is missing. Never run it without the user\'s explicit agreement: the first call without confirm: true only explains the impact; dry_run: true tests the pipeline without changing the site. The Site Converter extension must be active (manage_extension can install it).', 'fw' ),
 			'input_schema'        => self::schema( array(
-				'url'     => array( 'type' => 'string' ),
-				'confirm' => array( 'type' => 'boolean', 'default' => false ),
-				'dry_run' => array( 'type' => 'boolean', 'default' => false ),
+				'url'           => array( 'type' => 'string' ),
+				'confirm'       => array( 'type' => 'boolean', 'default' => false ),
+				'dry_run'       => array( 'type' => 'boolean', 'default' => false ),
+				'rendered_html' => array( 'type' => 'string', 'description' => 'The page as rendered by the AI Dev Kit (its /capture?single=1&html=1 answer), when this server cannot reach the kit.' ),
+				'allow_raw'     => array( 'type' => 'boolean', 'default' => false, 'description' => 'Convert from the raw HTML fetch anyway (only for plain server-rendered sites).' ),
 			), array( 'url' ) ),
 			'permission_callback' => function () {
 				return current_user_can( 'manage_options' ) && current_user_can( 'switch_themes' );
@@ -496,9 +498,11 @@ class FW_AI_Abilities {
 	 * ------------------------------------------------------------------ */
 
 	public static function site_info() {
-		$active = array();
+		$active   = array();
+		$versions = array();
 		foreach ( (array) fw()->extensions->get_all() as $name => $ext ) {
-			$active[] = (string) $name;
+			$active[]            = (string) $name;
+			$versions[ $name ] = (string) $ext->manifest->get_version();
 		}
 		$types = function_exists( 'fw_ext_page_builder_get_supported_post_types' ) ? array_keys( (array) fw_ext_page_builder_get_supported_post_types() ) : array( 'page' );
 
@@ -532,6 +536,9 @@ class FW_AI_Abilities {
 				: null,
 			'unysonplus'         => defined( 'FW_VERSION' ) ? FW_VERSION : ( function_exists( 'fw' ) ? fw()->manifest->get_version() : '' ),
 			'active_extensions'  => $active,
+			'extension_versions' => $versions,
+			// The MCP endpoint and the REST API need pretty permalinks ("plain" breaks /wp-json/).
+			'permalinks'         => (string) get_option( 'permalink_structure' ) !== '' ? (string) get_option( 'permalink_structure' ) : 'plain',
 			'builder_post_types' => $types,
 			'front_page_id'      => (int) get_option( 'page_on_front' ),
 			'pages'              => $pages,

@@ -37,14 +37,11 @@ $form_open = static function ( $action, $extra = '' ) {
 
 // The form that was just submitted, so its section stays open after the reload.
 $posted        = isset( $_POST['upw_ai_action'] ) ? sanitize_key( wp_unslash( $_POST['upw_ai_action'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
-$open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'save_mode', 'create_password', 'revoke_password', 'revoke_app', 'save_access', 'reset' ), true );
+$open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'save_mode', 'create_password', 'revoke_password', 'revoke_app', 'save_access', 'reset', 'check_connection', 'fix_permalinks' ), true );
 ?>
 <div class="wrap upw-ai-settings">
 
-	<h1 class="upw-ai-title">
-		<?php esc_html_e( 'AI Assistant', 'fw' ); ?>
-		<span class="upw-ai-beta" title="<?php esc_attr_e( 'This extension is in its trial stage. Every AI change can be undone, but keep backups of anything important.', 'fw' ); ?>"><?php esc_html_e( 'Beta', 'fw' ); ?></span>
-	</h1>
+	<?php echo FW_Extension_AI_Assistant::header_html( 'settings' ); // phpcs:ignore WordPress.Security.EscapeOutput -- built from escaped parts ?>
 	<p class="upw-ai-lede"><?php esc_html_e( 'Chat with an AI that builds and edits your pages. Open it from "AI Assistant" in the top bar on any admin screen, or from the page builder. Every change it makes can be undone.', 'fw' ); ?></p>
 
 	<?php foreach ( (array) $notices as $n ) : ?>
@@ -121,7 +118,7 @@ $open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'sav
 		printf(
 			/* translators: %s: link to the AI Changes screen */
 			esc_html__( 'Every change the AI makes is saved first and can be undone: see %s.', 'fw' ),
-			'<a href="' . esc_url( FW_AI_Changes::url() ) . '">' . esc_html__( 'AI Changes', 'fw' ) . '</a>'
+			'<a href="' . esc_url( FW_AI_Changes::url() ) . '">' . esc_html__( 'the Changes tab', 'fw' ) . '</a>'
 		);
 		?>
 	</p>
@@ -138,7 +135,7 @@ $open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'sav
 					<?php
 					printf(
 						/* translators: 1: download link, 2: setup guide link */
-						esc_html__( 'Download it from %1$s, then run start-converter.bat (Windows) or start-converter.command (macOS) and leave the window open. First time? The %2$s walks through it.', 'fw' ),
+						esc_html__( 'Download it from %1$s, then run start.bat (Windows) or start.command (macOS) and leave the window open. First time? The %2$s walks through it.', 'fw' ),
 						'<a href="' . esc_url( $kit_url ) . '" target="_blank" rel="noopener">' . esc_html__( 'GitHub', 'fw' ) . '</a>',
 						'<a href="' . esc_url( $guide_url ) . '">' . esc_html__( 'Site Converter setup guide', 'fw' ) . '</a>'
 					);
@@ -248,6 +245,16 @@ $open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'sav
 			<h3><?php esc_html_e( 'Outside AI programs', 'fw' ); ?></h3>
 			<p><?php esc_html_e( 'Lets an AI program outside WordPress, such as Claude Code in a terminal or Claude Desktop, work on this site directly over MCP. You give it instructions in that program. This is separate from the chat panel, which does not need it.', 'fw' ); ?></p>
 
+			<div class="upw-ai-howto">
+				<p><strong><?php esc_html_e( 'How to connect one', 'fw' ); ?></strong></p>
+				<ol>
+					<li><?php esc_html_e( 'Under "Access for outside AI programs", choose Read and write (or Read only, if it should only look), then press Save access.', 'fw' ); ?></li>
+					<li><?php esc_html_e( 'Type a name for the connection (e.g. "Claude Code on my laptop") and press Create a connection password.', 'fw' ); ?></li>
+					<li><?php esc_html_e( 'Copy the Server URL, Username and Password shown into your AI program — or paste them to the AI that asked for them. The password is shown only once.', 'fw' ); ?></li>
+				</ol>
+				<p class="upw-ai-muted"><?php esc_html_e( 'Apps with a web sign-in need only the Server URL: they open a page here where you press Allow. To disconnect anything, use Revoke or Sign out in the lists below.', 'fw' ); ?></p>
+			</div>
+
 			<?php if ( $new_connection ) : ?>
 				<?php
 				$config = array(
@@ -260,10 +267,42 @@ $open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'sav
 					),
 				);
 				?>
+				<?php
+				// One block with everything an AI needs — copy once, paste once (to an AI program, or to the AI
+				// that asked). The separate fields and the JSON config stay below for programs that want them.
+				$copy_all = implode( "\n", array(
+					__( 'Connect to my WordPress site through its MCP server:', 'fw' ),
+					__( 'Server URL:', 'fw' ) . ' ' . $endpoint,
+					__( 'Username:', 'fw' ) . ' ' . $new_connection['user'],
+					__( 'Password:', 'fw' ) . ' ' . $new_connection['password'],
+					__( 'Authorization header:', 'fw' ) . ' ' . $new_connection['header'],
+				) );
+				?>
 				<div class="upw-ai-created">
-					<h4><?php esc_html_e( 'Connection password created. Copy these details now.', 'fw' ); ?></h4>
+					<h4><?php esc_html_e( 'Connection password created. Copy it now.', 'fw' ); ?></h4>
 					<p><strong><?php esc_html_e( 'This is the only time the password is shown.', 'fw' ); ?></strong>
 						<?php esc_html_e( 'Anyone with it can act on this site as you, so keep it private, like your login password.', 'fw' ); ?></p>
+					<div class="upw-ai-copyall">
+						<textarea id="upw-ai-copyall-text" class="large-text code" rows="5" readonly onclick="this.select()"><?php echo esc_textarea( $copy_all ); ?></textarea>
+						<p>
+							<button type="button" class="button button-primary" id="upw-ai-copyall-btn" data-done="<?php esc_attr_e( 'Copied', 'fw' ); ?>"><?php esc_html_e( 'Copy everything', 'fw' ); ?></button>
+							<span class="upw-ai-muted"><?php esc_html_e( 'Paste it into your AI program, or straight to the AI that asked for it.', 'fw' ); ?></span>
+						</p>
+					</div>
+					<script>
+					( function () {
+						var b = document.getElementById( 'upw-ai-copyall-btn' ), t = document.getElementById( 'upw-ai-copyall-text' );
+						if ( ! b || ! t ) { return; }
+						b.addEventListener( 'click', function () {
+							var done = function () { var o = b.textContent; b.textContent = '✓ ' + b.getAttribute( 'data-done' ); setTimeout( function () { b.textContent = o; }, 2000 ); };
+							if ( navigator.clipboard && window.isSecureContext ) {
+								navigator.clipboard.writeText( t.value ).then( done, function () { t.select(); document.execCommand( 'copy' ); done(); } );
+							} else { t.select(); document.execCommand( 'copy' ); done(); }
+						} );
+					} )();
+					</script>
+					<details class="upw-ai-created-more">
+						<summary><?php esc_html_e( 'Other formats (separate fields, MCP client config)', 'fw' ); ?></summary>
 					<table class="form-table" role="presentation">
 						<tr><th scope="row"><?php esc_html_e( 'Server URL', 'fw' ); ?></th>
 							<td><input type="text" class="large-text code" readonly value="<?php echo esc_attr( $endpoint ); ?>" onclick="this.select()"></td></tr>
@@ -279,6 +318,7 @@ $open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'sav
 								<p class="description"><?php esc_html_e( 'Paste this into your AI program\'s MCP server settings, or add a remote HTTP MCP server with the URL and Authorization header above. "Last used" below fills in once the program connects.', 'fw' ); ?></p>
 							</td></tr>
 					</table>
+					</details>
 				</div>
 			<?php endif; ?>
 
@@ -295,6 +335,8 @@ $open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'sav
 				<p><?php submit_button( __( 'Save access', 'fw' ), 'secondary', 'submit', false ); ?>
 					<span class="upw-ai-muted upw-ai-endpoint"><?php esc_html_e( 'Server URL:', 'fw' ); ?> <code><?php echo esc_html( $endpoint ); ?></code></span></p>
 			</form>
+
+			<?php FW_AI_Connection::render( $form_open ); ?>
 
 			<?php if ( ! $app_pw_ok ) : ?>
 				<p class="upw-ai-note"><?php esc_html_e( 'Outside programs sign in with an Application Password, and WordPress only offers those over HTTPS (or on a local development site). Serve this site over HTTPS to connect one.', 'fw' ); ?></p>
@@ -385,7 +427,10 @@ $open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'sav
 				</fieldset>
 				<p><label><input type="checkbox" name="usage_log" value="1" <?php checked( FW_AI_Access::logging() ); ?>>
 					<?php esc_html_e( 'Keep a usage log (who asked what, the newest 500 requests)', 'fw' ); ?></label>
-					— <a href="<?php echo esc_url( FW_AI_Access::url() ); ?>"><?php esc_html_e( 'see AI Usage', 'fw' ); ?></a></p>
+					— <a href="<?php echo esc_url( FW_AI_Access::url() ); ?>"><?php esc_html_e( 'see the Usage tab', 'fw' ); ?></a></p>
+				<p><label><input type="checkbox" name="theme_php" value="1" <?php checked( FW_AI_Files::php_allowed() ); ?>>
+					<?php esc_html_e( 'Let the AI write PHP files in the child theme (functions.php, templates)', 'fw' ); ?></label><br>
+					<span class="upw-ai-muted"><?php esc_html_e( 'Off by default. PHP runs on every page, so a mistake can take the site down; the AI checks the syntax and keeps a backup, but only turn this on if you need it. CSS, JS and other files never need it.', 'fw' ); ?></span></p>
 				<p><?php submit_button( __( 'Save access', 'fw' ), 'secondary', 'submit', false ); ?></p>
 			</form>
 		</div>
@@ -521,6 +566,14 @@ $open_advanced = $new_connection || in_array( $posted, array( 'save_panel', 'sav
 	.upw-ai-settings .upw-ai-sub > p { max-width: 70ch; }
 	.upw-ai-settings .upw-ai-sub .form-table { margin-top: 0; }
 	.upw-ai-settings .upw-ai-radios { margin: .25rem 0; }
+	.upw-ai-settings .upw-ai-copyall textarea { font-size: 13px; line-height: 1.5; }
+	.upw-ai-settings .upw-ai-copyall p { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin: .5rem 0 0; }
+	.upw-ai-settings .upw-ai-created-more { margin-top: 1rem; }
+	.upw-ai-settings .upw-ai-created-more > summary { cursor: pointer; font-weight: 600; }
+	.upw-ai-settings .upw-ai-howto { margin: .75rem 0 1rem; padding: .75rem 1rem; border-radius: 8px; background: var(--ai-panel2, #f6f7f7); max-width: 60rem; }
+	.upw-ai-settings .upw-ai-howto p { margin: .25rem 0; }
+	.upw-ai-settings .upw-ai-howto ol { margin: .4rem 0 .5rem 1.25rem; }
+	.upw-ai-settings .upw-ai-howto li { margin: .2rem 0; }
 	.upw-ai-settings .upw-ai-radios legend { font-weight: 600; margin-bottom: .35rem; }
 	.upw-ai-settings .upw-ai-radios label { display: block; margin: .35rem 0; }
 	.upw-ai-settings .upw-ai-radios strong::after { content: ":"; margin-right: .2rem; }
