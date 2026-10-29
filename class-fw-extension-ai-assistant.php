@@ -82,6 +82,9 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		require_once $this->get_path( '/includes/class-fw-ai-extensions.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-files.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-connection.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-content.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-queue.php' );
+		FW_AI_Queue::init();
 
 		add_action( 'wp_abilities_api_categories_init', array( 'FW_AI_Abilities', 'register_categories' ) );
 		add_action( 'wp_abilities_api_init', array( 'FW_AI_Abilities', 'register' ) );

@@ -82,6 +82,15 @@ class FW_AI_Theme {
 			);
 		}
 
+		if ( ! $existing->exists() && class_exists( 'FW_AI_Queue' ) && FW_AI_Queue::must_queue() ) {
+			// The host refuses PHP file creation from the AI's request (functions.php): an administrator
+			// approves it in wp-admin, which runs this same call from there.
+			$job = FW_AI_Queue::find( 'child:' . $slug );
+			if ( ! $job || $job['status'] !== 'queued' ) {
+				$job = FW_AI_Queue::add( 'child_theme', sprintf( 'Child theme from your AI app: create "%s" and switch the site to it', $name ), array( 'name' => $name ), 'child:' . $slug, 'switch_themes' );
+			}
+			return FW_AI_Queue::status( $job ) + array( 'theme' => $slug );
+		}
 		if ( ! $existing->exists() ) {
 			$written = self::write( $slug, $name );
 			if ( is_wp_error( $written ) ) {
@@ -112,16 +121,12 @@ class FW_AI_Theme {
 	 * @return true|WP_Error
 	 */
 	private static function write( $slug, $name ) {
-		require_once ABSPATH . 'wp-admin/includes/file.php';
-
-		if ( 'direct' !== get_filesystem_method() || ! WP_Filesystem() ) {
-			return new WP_Error( 'fw_ai_theme_fs', 'This server does not allow writing theme files directly, so the child theme cannot be created from here. The person can create it by hand (Appearance > Themes needs a zip with style.css naming "Template: unysonplus-theme").' );
-		}
-		global $wp_filesystem;
-
+		// Plain PHP file writes, the same path child-theme-files uses — which works on managed hosts where
+		// the WP_Filesystem layer did not ("Could not write the theme files." on WP Engine). A failure names
+		// the file and the operating system's reason, so a host restriction is visible rather than guessed.
 		$dir = trailingslashit( get_theme_root() ) . $slug;
-		if ( ! $wp_filesystem->is_dir( $dir ) && ! $wp_filesystem->mkdir( $dir, FS_CHMOD_DIR ) ) {
-			return new WP_Error( 'fw_ai_theme_write', 'Could not create the theme folder.' );
+		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) {
+			return new WP_Error( 'fw_ai_theme_write', 'Could not create the theme folder ' . $dir . ' (themes folder writable: ' . ( wp_is_writable( get_theme_root() ) ? 'yes' : 'no' ) . ').' );
 		}
 
 		$style = "/*\n"
@@ -143,10 +148,16 @@ class FW_AI_Theme {
 			. "\twp_enqueue_style( 'child-style', get_stylesheet_uri(), array( 'parent-style' ), wp_get_theme()->get( 'Version' ) );\n"
 			. "}, 20 );\n";
 
-		if ( ! $wp_filesystem->put_contents( $dir . '/style.css', $style, FS_CHMOD_FILE )
-			|| ! $wp_filesystem->put_contents( $dir . '/functions.php', $functions, FS_CHMOD_FILE ) ) {
-			return new WP_Error( 'fw_ai_theme_write', 'Could not write the theme files.' );
+		foreach ( array( 'style.css' => $style, 'functions.php' => $functions ) as $file => $body ) {
+			if ( false === @file_put_contents( $dir . '/' . $file, $body ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions
+				$err = error_get_last();
+				return new WP_Error( 'fw_ai_theme_write', sprintf(
+					'Could not write %s/%s (%s; folder writable: %s).',
+					$slug, $file, $err ? $err['message'] : 'no reason given', wp_is_writable( $dir ) ? 'yes' : 'no'
+				) );
+			}
 		}
+		wp_clean_themes_cache();
 
 		return true;
 	}

@@ -149,6 +149,10 @@ class FW_AI_Toolkit {
 	 *                          post_fields?: { <post_id>: [ post_title | post_content | post_excerpt | post_status | post_name | menu_order | post_parent ] },
 	 *                          post_terms?: { <post_id>: [ taxonomy, … ] },
 	 *                          created_attachments?: int[] (undo deletes the attachment and its files — not re-creatable),
+	 *                          created_users?: int[] (undo deletes them, giving their content to the person undoing),
+	 *                          user_fields?: { <user_id>: [ user_email | user_url | display_name | first_name | last_name | nickname | description | role ] },
+	 *                          user_meta?: { <user_id>: [ meta key, … ] },
+	 *                          created_short_links?: int[] (undo deletes them — Short Links extension),
 	 *                          files?: string[] (absolute paths inside the themes folder; undo restores each file
 	 *                          byte for byte, or deletes it when it did not exist) }
 	 * @param string $ability
@@ -163,10 +167,31 @@ class FW_AI_Toolkit {
 			'trashed_posts' => array_map( 'intval', (array) ( $spec['trashed_posts'] ?? array() ) ),
 			'created_menus' => array_map( 'intval', (array) ( $spec['created_menus'] ?? array() ) ),
 			'created_attachments' => array_map( 'intval', (array) ( $spec['created_attachments'] ?? array() ) ),
+			'created_users'       => array_map( 'intval', (array) ( $spec['created_users'] ?? array() ) ),
+			'created_short_links' => array_map( 'intval', (array) ( $spec['created_short_links'] ?? array() ) ),
+			'user_meta'           => array(),
+			'user_fields'         => array(),
 			'post_fields'   => array(),
 			'post_terms'    => array(),
 			'files'         => array(),
 		);
+		// Users changed (not created): their fields and meta as they were.
+		foreach ( (array) ( $spec['user_fields'] ?? array() ) as $uid => $fields ) {
+			$u = get_userdata( (int) $uid );
+			if ( $u ) {
+				foreach ( (array) $fields as $f ) {
+					if ( in_array( $f, array( 'user_email', 'user_url', 'display_name', 'first_name', 'last_name', 'nickname', 'description', 'role' ), true ) ) {
+						$values['user_fields'][ (int) $uid ][ $f ] = $f === 'role' ? (string) ( $u->roles ? reset( $u->roles ) : '' ) : (string) $u->$f;
+					}
+				}
+			}
+		}
+		foreach ( (array) ( $spec['user_meta'] ?? array() ) as $uid => $keys ) {
+			foreach ( (array) $keys as $key ) {
+				$exists = metadata_exists( 'user', (int) $uid, (string) $key );
+				$values['user_meta'][ (int) $uid ][ (string) $key ] = array( 'exists' => $exists, 'value' => $exists ? get_user_meta( (int) $uid, (string) $key, true ) : null );
+			}
+		}
 		foreach ( (array) ( $spec['files'] ?? array() ) as $path ) {
 			$rel = self::theme_relative( (string) $path );
 			if ( $rel === '' ) {
@@ -284,6 +309,8 @@ class FW_AI_Toolkit {
 		// Undoing a creation trashes the post, so undoing the undo must bring it back (and vice versa).
 		$spec['trashed_posts'] = (array) ( $v['created_posts'] ?? array() );
 		$spec['created_posts'] = (array) ( $v['trashed_posts'] ?? array() );
+		$spec['user_fields']   = array_map( 'array_keys', (array) ( $v['user_fields'] ?? array() ) );
+		$spec['user_meta']     = array_map( 'array_keys', (array) ( $v['user_meta'] ?? array() ) );
 		$spec['files']         = array();
 		foreach ( array_keys( (array) ( $v['files'] ?? array() ) ) as $rel ) {
 			$spec['files'][] = trailingslashit( get_theme_root() ) . $rel;
@@ -294,6 +321,38 @@ class FW_AI_Toolkit {
 			if ( get_post( (int) $pid ) ) {
 				wp_trash_post( (int) $pid );
 			}
+		}
+		foreach ( (array) ( $v['created_users'] ?? array() ) as $uid ) {
+			if ( (int) $uid !== get_current_user_id() && get_userdata( (int) $uid ) && ! user_can( (int) $uid, 'manage_options' ) ) {
+				require_once ABSPATH . 'wp-admin/includes/user.php';
+				wp_delete_user( (int) $uid, get_current_user_id() ); // their content moves to the person undoing, never lost
+			}
+		}
+		foreach ( (array) ( $v['user_fields'] ?? array() ) as $uid => $fields ) {
+			if ( get_userdata( (int) $uid ) ) {
+				$f = (array) $fields;
+				if ( isset( $f['role'] ) ) {
+					if ( $f['role'] !== '' && $f['role'] !== 'administrator' ) {
+						( new WP_User( (int) $uid ) )->set_role( $f['role'] );
+					}
+					unset( $f['role'] );
+				}
+				if ( $f ) {
+					wp_update_user( array( 'ID' => (int) $uid ) + $f );
+				}
+			}
+		}
+		foreach ( (array) ( $v['user_meta'] ?? array() ) as $uid => $keys ) {
+			foreach ( (array) $keys as $key => $m ) {
+				if ( ! empty( $m['exists'] ) ) {
+					update_user_meta( (int) $uid, $key, $m['value'] );
+				} else {
+					delete_user_meta( (int) $uid, $key );
+				}
+			}
+		}
+		if ( ! empty( $v['created_short_links'] ) && class_exists( 'FW_Short_Links_Service' ) ) {
+			FW_Short_Links_Service::delete( array_map( 'intval', (array) $v['created_short_links'] ) );
 		}
 		foreach ( (array) ( $v['created_attachments'] ?? array() ) as $att ) {
 			if ( get_post_type( (int) $att ) === 'attachment' ) {

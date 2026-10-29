@@ -68,6 +68,7 @@ class FW_AI_Files {
 				'alt'       => array( 'type' => 'string' ),
 				'caption'   => array( 'type' => 'string' ),
 				'attach_to' => array( 'type' => 'integer', 'minimum' => 0, 'default' => 0 ),
+				'keep_path' => array( 'type' => 'string', 'description' => 'Store at exactly this uploads-relative path, e.g. "2018/10/logo.png", so content embedding /wp-content/uploads/2018/10/logo.png keeps working. Re-sending the same file is a no-op; a different file at that path is refused.' ),
 			),
 			'permission'  => 'upload_files',
 			'execute'     => array( __CLASS__, 'upload_media' ),
@@ -90,13 +91,17 @@ class FW_AI_Files {
 
 		fw_ai_register_ability( 'install-theme', array(
 			'label'       => __( 'Install or update a theme', 'fw' ),
-			'description' => __( 'Installs a theme, or updates an installed one, from a .zip URL through WordPress\'s own installer — the same as Appearance → Themes → Add New → Upload Theme. TWO STEPS: without confirm nothing changes; you get the theme\'s name and version in the package and the version it would replace — tell the person, and call again with confirm: true after they agree. activate: true also switches the site to it (undoable with undo_change). A broken package leaves the installed theme as it was. The install itself has no undo: to go back, install the older package.', 'fw' ),
+			'description' => __( 'Installs a theme, or updates an installed one, from a .zip through WordPress\'s own installer — the same as Appearance → Themes → Add New → Upload Theme. The .zip comes from url, OR as file data in pieces: upload_id (your own id, 6–64 letters, digits, - or _), chunk_index (0-based), chunk_count, filename, data (base64, up to 2 MB a piece). Pieces before the last only store and report progress; the last one assembles the package and continues like a url call, and a later call with just upload_id (+ confirm) reuses it. A GitHub tag archive (folder "<Repo>-<tag>") whose theme name matches an installed theme updates that theme. TWO STEPS: without confirm nothing changes; you get the theme\'s name and version in the package and the version it would replace — tell the person, and call again with confirm: true after they agree. activate: true also switches the site to it (undoable with undo_change). A broken package leaves the installed theme as it was. The install itself has no undo: to go back, install the older package.', 'fw' ),
 			'input'       => array(
-				'url'      => array( 'type' => 'string', 'description' => 'A public http(s) address of the theme .zip.' ),
-				'activate' => array( 'type' => 'boolean', 'default' => false ),
-				'confirm'  => array( 'type' => 'boolean', 'default' => false ),
+				'url'         => array( 'type' => 'string', 'description' => 'A public http(s) address of the theme .zip.' ),
+				'upload_id'   => array( 'type' => 'string', 'description' => 'Your id for a package sent as data in pieces.' ),
+				'chunk_index' => array( 'type' => 'integer', 'minimum' => 0 ),
+				'chunk_count' => array( 'type' => 'integer', 'minimum' => 1, 'maximum' => 60 ),
+				'filename'    => array( 'type' => 'string' ),
+				'data'        => array( 'type' => 'string', 'description' => 'One piece of the .zip, base64.' ),
+				'activate'    => array( 'type' => 'boolean', 'default' => false ),
+				'confirm'     => array( 'type' => 'boolean', 'default' => false ),
 			),
-			'required'    => array( 'url' ),
 			'permission'  => 'install_themes',
 			'execute'     => array( __CLASS__, 'install_theme' ),
 		) );
@@ -197,6 +202,39 @@ class FW_AI_Files {
 			add_filter( 'upload_mimes', $mimes );
 		}
 
+		// keep_path: store the file at exactly that uploads path ("2018/10/x.png"), so content that embeds it
+		// by URL keeps working without rewriting. Refuses "..", and refuses to replace a DIFFERENT file.
+		$keep = trim( str_replace( '\\', '/', (string) ( $in['keep_path'] ?? '' ) ), '/' );
+		if ( $keep !== '' ) {
+			$res = self::store_at_path( $tmp, $keep, sanitize_text_field( (string) ( $in['title'] ?? '' ) ) );
+			if ( $is_svg ) {
+				remove_filter( 'upload_mimes', $mimes );
+			}
+			if ( is_file( $tmp ) ) {
+				wp_delete_file( $tmp );
+			}
+			if ( is_wp_error( $res ) ) {
+				return $res;
+			}
+			list( $id, $created ) = $res;
+			if ( isset( $in['alt'] ) ) {
+				update_post_meta( $id, '_wp_attachment_image_alt', sanitize_text_field( (string) $in['alt'] ) );
+			}
+			if ( isset( $in['caption'] ) ) {
+				wp_update_post( array( 'ID' => $id, 'post_excerpt' => wp_kses_post( (string) $in['caption'] ) ) );
+			}
+			$url = wp_get_attachment_url( $id );
+			return array(
+				'ok'               => true,
+				'id'               => $id,
+				'url'              => $url,
+				'path'             => $keep,
+				'unchanged'        => ! $created,
+				'image_value'      => array( 'attachment_id' => (string) $id, 'url' => $url, 'alt' => (string) get_post_meta( $id, '_wp_attachment_image_alt', true ) ),
+				'undo_revision_id' => $created ? fw_ai_snapshot( array( 'created_attachments' => array( $id ) ), 'unysonplus/upload-media', 'Uploaded ' . $keep ) : null,
+			);
+		}
+
 		$title = sanitize_text_field( (string) ( $in['title'] ?? '' ) );
 		$id    = media_handle_sideload(
 			array( 'name' => $name, 'tmp_name' => $tmp ),
@@ -232,6 +270,72 @@ class FW_AI_Files {
 			'image_value'      => array( 'attachment_id' => (string) $id, 'url' => wp_get_attachment_url( $id ), 'alt' => (string) get_post_meta( $id, '_wp_attachment_image_alt', true ) ),
 			'undo_revision_id' => $undo,
 		);
+	}
+
+	/**
+	 * Put a file at an exact uploads-relative path and make sure it has a Media Library entry.
+	 *
+	 * @param string $src   A local temporary file.
+	 * @param string $rel   "2018/10/x.png"
+	 * @param string $title
+	 * @return array|WP_Error [ attachment id, created? ]
+	 */
+	private static function store_at_path( $src, $rel, $title = '' ) {
+		if ( strpos( $rel, '..' ) !== false || preg_match( '#(^|/)\.|[:\0]#', $rel ) || ! preg_match( '#^[A-Za-z0-9._/@ ()+-]+$#', $rel ) ) {
+			return new WP_Error( 'upw_ai_upload', 'keep_path must be a plain uploads-relative path like "2018/10/logo.png".' );
+		}
+		$check = wp_check_filetype_and_ext( $src, wp_basename( $rel ) );
+		if ( empty( $check['ext'] ) || empty( $check['type'] ) ) {
+			return new WP_Error( 'upw_ai_upload', 'WordPress refused the file: this file type is not allowed (' . wp_basename( $rel ) . ').' );
+		}
+		$up   = wp_get_upload_dir();
+		$dest = trailingslashit( $up['basedir'] ) . $rel;
+		if ( is_file( $dest ) ) {
+			if ( md5_file( $dest ) !== md5_file( $src ) ) {
+				return new WP_Error( 'upw_ai_upload', 'A different file already exists at ' . $rel . '; it was not replaced.' );
+			}
+			$id = self::attachment_for_file( $rel, $title );
+			return $id ? array( $id['id'], $id['created'] ) : new WP_Error( 'upw_ai_upload', 'The file exists but could not be added to the Media Library.' );
+		}
+		wp_mkdir_p( dirname( $dest ) );
+		if ( ! @copy( $src, $dest ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			$err = error_get_last();
+			return new WP_Error( 'upw_ai_upload', 'Could not write ' . $rel . ' (' . ( $err ? $err['message'] : 'no reason given' ) . ').' );
+		}
+		$id = self::attachment_for_file( $rel, $title );
+		return $id ? array( $id['id'], true ) : new WP_Error( 'upw_ai_upload', 'The file was stored but could not be added to the Media Library.' );
+	}
+
+	/**
+	 * The attachment for a file already in uploads ("2018/10/x.png"), creating it (and its image sizes)
+	 * the first time. Shared by keep_path and the content tools' { file } references.
+	 *
+	 * @param string $rel
+	 * @param string $title
+	 * @return array|null { id, created }
+	 */
+	public static function attachment_for_file( $rel, $title = '' ) {
+		global $wpdb;
+		$rel = trim( str_replace( '\\', '/', (string) $rel ), '/' );
+		if ( $rel === '' || strpos( $rel, '..' ) !== false ) {
+			return null;
+		}
+		$id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND meta_value = %s LIMIT 1", $rel ) );
+		if ( $id ) {
+			return array( 'id' => $id, 'created' => false );
+		}
+		$path = trailingslashit( wp_get_upload_dir()['basedir'] ) . $rel;
+		if ( ! is_file( $path ) ) {
+			return null;
+		}
+		require_once ABSPATH . 'wp-admin/includes/image.php';
+		$type = wp_check_filetype( $path );
+		$id   = wp_insert_attachment( array( 'post_mime_type' => $type['type'], 'post_title' => $title !== '' ? $title : preg_replace( '/\.[^.]+$/', '', wp_basename( $rel ) ), 'post_status' => 'inherit' ), $path );
+		if ( ! $id || is_wp_error( $id ) ) {
+			return null;
+		}
+		wp_update_attachment_metadata( $id, wp_generate_attachment_metadata( $id, $path ) );
+		return array( 'id' => (int) $id, 'created' => true );
 	}
 
 	/* ------------------------------------------------------------------ *
@@ -442,6 +546,19 @@ class FW_AI_Files {
 			);
 		}
 
+		// A host that refuses PHP file writes from the AI's request: the checked content waits for an
+		// administrator's Install in wp-admin (FW_AI_Queue), which runs this same write from there.
+		if ( $is_php && class_exists( 'FW_AI_Queue' ) && FW_AI_Queue::must_queue() ) {
+			$job = FW_AI_Queue::add(
+				'theme_file',
+				sprintf( 'PHP file from your AI app: %s %s/%s', $exists ? 'change' : 'create', $ctx['child_theme'], $p['rel'] ),
+				array( 'file' => FW_AI_Queue::keep_file( '', $new ), 'path' => $p['rel'] ),
+				'file:' . $ctx['child_theme'] . '/' . $p['rel'],
+				'edit_themes'
+			);
+			return $ctx + FW_AI_Queue::status( $job );
+		}
+
 		$undo = fw_ai_snapshot( array( 'files' => array( $p['abs'] ) ), 'unysonplus/child-theme-files', ( $exists ? 'Changed ' : 'Created ' ) . $ctx['child_theme'] . '/' . $p['rel'] );
 		wp_mkdir_p( dirname( $p['abs'] ) );
 		if ( file_put_contents( $p['abs'], $new ) === false ) {
@@ -524,6 +641,188 @@ class FW_AI_Files {
 	}
 
 	/**
+	 * Try to create, then overwrite, a throwaway .php file in wp-content/upgrade and in the themes folder,
+	 * and remove it. Reports each step's result and the operating system's reason when one fails.
+	 *
+	 * @return array
+	 */
+	private static function php_write_probe() {
+		$out = array();
+		foreach ( array( 'upgrade' => WP_CONTENT_DIR . '/upgrade', 'themes' => get_theme_root() ) as $where => $dir ) {
+			wp_mkdir_p( $dir );
+			$f = trailingslashit( $dir ) . 'upw-probe-' . wp_generate_password( 8, false ) . '.php';
+			$r = array();
+			foreach ( array( 'create', 'overwrite' ) as $step ) {
+				$ok = @file_put_contents( $f, "<?php // probe\n" ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions
+				$e  = error_get_last();
+				$r[ $step ] = $ok !== false ? 'ok' : 'failed: ' . ( $e ? $e['message'] : 'no reason given' );
+				if ( $ok === false ) {
+					break;
+				}
+			}
+			$txt          = trailingslashit( $dir ) . 'upw-probe-' . wp_generate_password( 8, false ) . '.txt';
+			$r['txt']     = @file_put_contents( $txt, 'probe' ) !== false ? 'ok' : 'failed'; // phpcs:ignore
+			foreach ( array( $f, $txt ) as $x ) {
+				if ( is_file( $x ) ) {
+					@unlink( $x ); // phpcs:ignore
+				}
+			}
+			$out[ $where ] = $r;
+		}
+		return $out;
+	}
+
+	/**
+	 * Names of the callbacks on some hooks (for diagnosis).
+	 *
+	 * @param string[] $hooks
+	 * @return array
+	 */
+	private static function hook_names( array $hooks ) {
+		global $wp_filter;
+		$out = array();
+		foreach ( $hooks as $h ) {
+			if ( empty( $wp_filter[ $h ] ) ) {
+				continue;
+			}
+			foreach ( $wp_filter[ $h ]->callbacks as $cbs ) {
+				foreach ( $cbs as $cb ) {
+					$fn = $cb['function'];
+					if ( is_string( $fn ) ) {
+						$name = $fn;
+					} elseif ( is_array( $fn ) ) {
+						$name = ( is_object( $fn[0] ) ? get_class( $fn[0] ) : (string) $fn[0] ) . '::' . $fn[1];
+					} else {
+						try {
+							$rf   = new ReflectionFunction( $fn );
+							$name = 'closure@' . str_replace( wp_normalize_path( ABSPATH ), '', wp_normalize_path( (string) $rf->getFileName() ) ) . ':' . $rf->getStartLine();
+						} catch ( Exception $e ) {
+							$name = 'closure';
+						}
+					}
+					$out[ $h ][] = $name;
+				}
+			}
+		}
+		return $out;
+	}
+
+	/* ---------- a file sent as data, in pieces ---------- */
+
+	const CHUNK_MAX   = 2097152;   // 2 MB of decoded data per piece
+	const PACKAGE_MAX = 52428800;  // 50 MB per package
+	const CHUNK_TTL   = 7200;      // pieces / assembled packages left behind are removed after 2 hours
+
+	/**
+	 * The folder holding one upload's pieces: uploads/unysonplus/tmp/upload-<id>/ (no web access).
+	 *
+	 * @param string $uid
+	 * @return string|WP_Error
+	 */
+	private static function chunks_dir( $uid ) {
+		if ( ! preg_match( '/^[A-Za-z0-9_-]{6,64}$/', (string) $uid ) ) {
+			return new WP_Error( 'upw_ai_chunks', 'upload_id must be 6–64 letters, digits, - or _.' );
+		}
+		$base = function_exists( 'fw_upw_uploads_dir' ) ? fw_upw_uploads_dir( 'tmp' )['path'] : wp_upload_dir()['basedir'] . '/unysonplus/tmp';
+		if ( ! is_dir( $base ) ) {
+			wp_mkdir_p( $base );
+			@file_put_contents( $base . '/.htaccess', "Require all denied\nDeny from all\n" ); // phpcs:ignore
+			@file_put_contents( $base . '/index.php', "<?php // Silence is golden.\n" ); // phpcs:ignore
+		}
+		// Leftovers of abandoned uploads.
+		foreach ( (array) glob( $base . '/upload-*', GLOB_ONLYDIR ) as $old ) {
+			if ( $old && time() - (int) @filemtime( $old ) > self::CHUNK_TTL ) {
+				self::rmdir_r( $old );
+			}
+		}
+		return $base . '/upload-' . $uid;
+	}
+
+	private static function rmdir_r( $dir ) {
+		foreach ( (array) glob( $dir . '/*' ) as $f ) {
+			if ( $f && is_file( $f ) ) {
+				wp_delete_file( $f );
+			}
+		}
+		@rmdir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+	}
+
+	/** Remove an upload's pieces and assembled package. */
+	public static function chunks_clear( $uid ) {
+		$dir = self::chunks_dir( $uid );
+		if ( ! is_wp_error( $dir ) && is_dir( $dir ) ) {
+			self::rmdir_r( $dir );
+		}
+	}
+
+	/**
+	 * Store one piece; when every piece is in, assemble them. Returns the path of a temporary COPY of the
+	 * assembled file (the caller may delete it), progress { ok, stored, received, of } while pieces are
+	 * still missing, or an error. A call with only upload_id reuses an assembled package.
+	 *
+	 * @param array $in
+	 * @return string|array|WP_Error
+	 */
+	private static function chunked_package( $in ) {
+		$uid = (string) ( $in['upload_id'] ?? '' );
+		$dir = self::chunks_dir( $uid );
+		if ( is_wp_error( $dir ) ) {
+			return $dir;
+		}
+		$whole = $dir . '/package.bin';
+		if ( isset( $in['data'] ) && $in['data'] !== '' ) {
+			$count = (int) ( $in['chunk_count'] ?? 0 );
+			$index = (int) ( $in['chunk_index'] ?? -1 );
+			if ( $count < 1 || $count > 60 || $index < 0 || $index >= $count ) {
+				return new WP_Error( 'upw_ai_chunks', 'chunk_count must be 1–60 and chunk_index 0 … chunk_count−1.' );
+			}
+			$bin = base64_decode( preg_replace( '/\s+/', '', preg_replace( '#^data:[^,]*,#', '', (string) $in['data'] ) ), true );
+			if ( $bin === false || $bin === '' ) {
+				return new WP_Error( 'upw_ai_chunks', 'data is not valid base64.' );
+			}
+			if ( strlen( $bin ) > self::CHUNK_MAX ) {
+				return new WP_Error( 'upw_ai_chunks', 'A piece is limited to 2 MB of data; send smaller pieces.' );
+			}
+			wp_mkdir_p( $dir );
+			file_put_contents( $dir . '/count', (string) $count );
+			file_put_contents( sprintf( '%s/%03d.part', $dir, $index ), $bin );
+			if ( is_file( $whole ) ) {
+				wp_delete_file( $whole ); // a re-sent piece invalidates an earlier assembly
+			}
+			$have = array();
+			for ( $i = 0; $i < $count; $i++ ) {
+				if ( is_file( sprintf( '%s/%03d.part', $dir, $i ) ) ) {
+					$have[] = $i;
+				}
+			}
+			if ( count( $have ) < $count ) {
+				return array( 'ok' => true, 'stored' => $index, 'received' => count( $have ), 'of' => $count, 'missing' => array_values( array_diff( range( 0, $count - 1 ), $have ) ), 'message' => 'Piece stored. Send the rest; the last one installs (or previews).' );
+			}
+			// All in: assemble.
+			$out  = fopen( $whole, 'wb' );
+			$size = 0;
+			for ( $i = 0; $i < $count; $i++ ) {
+				$part  = sprintf( '%s/%03d.part', $dir, $i );
+				$size += filesize( $part );
+				if ( $size > self::PACKAGE_MAX ) {
+					fclose( $out );
+					self::rmdir_r( $dir );
+					return new WP_Error( 'upw_ai_chunks', 'The package is larger than 50 MB.' );
+				}
+				fwrite( $out, (string) file_get_contents( $part ) );
+				wp_delete_file( $part );
+			}
+			fclose( $out );
+		}
+		if ( ! is_file( $whole ) ) {
+			return new WP_Error( 'upw_ai_chunks', 'No complete package for upload_id "' . $uid . '" (pieces expire after 2 hours). Send the pieces again.' );
+		}
+		$tmp = wp_tempnam( 'upw-package.zip' );
+		copy( $whole, $tmp );
+		return $tmp;
+	}
+
+	/**
 	 * @param array $in
 	 * @return array|WP_Error
 	 */
@@ -531,23 +830,65 @@ class FW_AI_Files {
 		if ( function_exists( 'wp_is_file_mod_allowed' ) && ! wp_is_file_mod_allowed( 'upw_ai_install_theme' ) ) {
 			return new WP_Error( 'upw_ai_theme', 'This site turns file changes off (DISALLOW_FILE_MODS), so themes cannot be installed or updated here.' );
 		}
-		$url = trim( (string) ( $in['url'] ?? '' ) );
-		if ( ! wp_http_validate_url( $url ) ) {
-			return new WP_Error( 'upw_ai_theme', 'url must be a public http(s) address of a .zip.' );
-		}
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 		require_once ABSPATH . 'wp-admin/includes/misc.php';
 		require_once ABSPATH . 'wp-admin/includes/theme.php';
 		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
 
-		$tmp = download_url( $url, 120 );
-		if ( is_wp_error( $tmp ) ) {
-			return new WP_Error( 'upw_ai_theme', 'Could not download the package: ' . $tmp->get_error_message() );
+		$url = trim( (string) ( $in['url'] ?? '' ) );
+		$uid = (string) ( $in['upload_id'] ?? '' );
+		$qkey = 'theme:' . ( $uid !== '' ? $uid : $url );
+		// A package already waiting for wp-admin approval: report where it stands.
+		if ( $uid !== '' && ( ! isset( $in['data'] ) || $in['data'] === '' ) && class_exists( 'FW_AI_Queue' ) && ! FW_AI_Queue::$running ) {
+			$job = FW_AI_Queue::find( $qkey );
+			if ( $job ) {
+				return FW_AI_Queue::status( $job );
+			}
+		}
+		if ( ! empty( $in['queued_package'] ) && class_exists( 'FW_AI_Queue' ) && FW_AI_Queue::$running ) {
+			// Approved in wp-admin: install the package kept when it was queued.
+			if ( ! is_file( (string) $in['queued_package'] ) ) {
+				return new WP_Error( 'upw_ai_theme', 'The waiting package is gone.' );
+			}
+			$tmp = wp_tempnam( 'upw-package.zip' );
+			copy( (string) $in['queued_package'], $tmp );
+		} elseif ( $url !== '' ) {
+			if ( ! wp_http_validate_url( $url ) ) {
+				return new WP_Error( 'upw_ai_theme', 'url must be a public http(s) address of a .zip.' );
+			}
+			$tmp = download_url( $url, 120 );
+			if ( is_wp_error( $tmp ) ) {
+				return new WP_Error( 'upw_ai_theme', 'Could not download the package: ' . $tmp->get_error_message() );
+			}
+		} elseif ( $uid !== '' ) {
+			$tmp = self::chunked_package( $in );
+			if ( is_wp_error( $tmp ) || is_array( $tmp ) ) {
+				return $tmp; // an error, or "piece n of m stored"
+			}
+		} else {
+			return new WP_Error( 'upw_ai_theme', 'Give url, or the package as data with upload_id, chunk_index and chunk_count.' );
 		}
 		$pkg = self::peek_package( $tmp );
 		if ( is_wp_error( $pkg ) ) {
 			wp_delete_file( $tmp );
 			return $pkg;
+		}
+		// Which installed theme this package updates. A GitHub tag archive unpacks to "<Repo>-<tag>", not to
+		// the theme's own folder: match it to an installed theme by name, so it updates that theme instead
+		// of installing a second copy beside it.
+		$target = $pkg['slug'];
+		if ( $target === '' || ! wp_get_theme( $target )->exists() ) {
+			foreach ( wp_get_themes() as $stylesheet => $t ) {
+				if ( $pkg['name'] !== '' && strcasecmp( (string) $t->get( 'Name' ), $pkg['name'] ) === 0 ) {
+					$target = (string) $stylesheet;
+					break;
+				}
+			}
+		}
+		$rename_to = ( $target !== '' && $target !== $pkg['slug'] ) ? $target : '';
+		if ( $rename_to ) {
+			$pkg['folder_in_package'] = $pkg['slug'];
+			$pkg['slug']              = $target;
 		}
 		$installed = $pkg['slug'] !== '' ? wp_get_theme( $pkg['slug'] ) : null;
 		$old       = ( $installed && $installed->exists() ) ? (string) $installed->get( 'Version' ) : '';
@@ -565,6 +906,23 @@ class FW_AI_Files {
 				'old_version' => $old,
 				'message'     => 'Nothing changed yet. This would ' . $what . '.' . $active . ' An install has no undo (to go back, install the older package). Ask the person, then call again with confirm: true.',
 			);
+		}
+
+		// Some managed hosts refuse to create .php files from the AI's (REST) request but allow it from
+		// wp-admin: keep the verified package and let an administrator approve it there (FW_AI_Queue).
+		if ( class_exists( 'FW_AI_Queue' ) && FW_AI_Queue::must_queue() ) {
+			$job = FW_AI_Queue::add(
+				'install_theme',
+				sprintf( 'Theme from your AI app: %s', ucfirst( $what ) ),
+				array( 'file' => FW_AI_Queue::keep_file( $tmp ), 'activate' => ! empty( $in['activate'] ) ),
+				$qkey,
+				'install_themes'
+			);
+			wp_delete_file( $tmp );
+			if ( $uid !== '' ) {
+				self::chunks_clear( $uid );
+			}
+			return FW_AI_Queue::status( $job ) + array( 'theme' => $pkg, 'old_version' => $old );
 		}
 
 		// Connect the way wp-admin and the background updater do: credentials from wp-config (FS_METHOD,
@@ -590,18 +948,46 @@ class FW_AI_Files {
 			}
 			return array( $upgrader, $result );
 		};
+		// A tag archive's "<Repo>-<tag>" folder is renamed to the installed theme's folder while unpacking
+		// (WordPress's own hook for exactly this), so the install overwrites that theme.
+		$rename = null;
+		if ( $rename_to ) {
+			$rename = function ( $source ) use ( $rename_to ) {
+				global $wp_filesystem;
+				if ( is_wp_error( $source ) || ! is_object( $wp_filesystem ) ) {
+					return $source;
+				}
+				$to = trailingslashit( dirname( untrailingslashit( $source ) ) ) . $rename_to . '/';
+				if ( untrailingslashit( $source ) === untrailingslashit( $to ) ) {
+					return $source;
+				}
+				return $wp_filesystem->move( $source, $to, true ) ? $to : new WP_Error( 'upw_ai_theme_rename', 'Could not rename the package folder to ' . $rename_to . '.' );
+			};
+			add_filter( 'upgrader_source_selection', $rename, 1 );
+		}
 		list( $upgrader, $result ) = $run();
 		$retried = false;
 		// Some hosts fail to write files while unpacking with ZipArchive ("Could not copy file") where
 		// WordPress's other unzipper, PclZip, works: try once more with it before giving up.
-		if ( is_wp_error( $result ) && in_array( $result->get_error_code(), array( 'copy_failed_ziparchive', 'incompatible_archive' ), true ) ) {
+		// The failure can come back as an error object OR as a plain false with the reason only in the
+		// installer's messages (seen on a managed host), so look at both.
+		$copy_failed = is_wp_error( $result )
+			? in_array( $result->get_error_code(), array( 'copy_failed_ziparchive', 'incompatible_archive', 'copy_failed_pclzip' ), true )
+			: ( ! $result && preg_match( '/could not copy file/i', implode( ' ', array_map( 'wp_strip_all_tags', (array) $upgrader->skin->get_upgrade_messages() ) ) ) );
+		if ( $copy_failed ) {
 			add_filter( 'unzip_file_use_ziparchive', '__return_false' );
 			list( $upgrader, $result ) = $run();
 			remove_filter( 'unzip_file_use_ziparchive', '__return_false' );
 			$retried = true;
 		}
+		if ( $rename ) {
+			remove_filter( 'upgrader_source_selection', $rename, 1 );
+		}
 		if ( is_file( $tmp ) ) {
 			wp_delete_file( $tmp );
+		}
+		if ( $uid !== '' && ! is_wp_error( $result ) && $result ) {
+			self::chunks_clear( $uid ); // installed: the stored package is no longer needed
 		}
 		if ( is_wp_error( $result ) || ! $result ) {
 			global $wp_filesystem;
@@ -611,6 +997,11 @@ class FW_AI_Files {
 				'upgrade_writable'  => wp_is_writable( WP_CONTENT_DIR . '/upgrade' ) || wp_is_writable( WP_CONTENT_DIR ),
 				'themes_writable'   => wp_is_writable( get_theme_root() ),
 				'retried_with_pclzip' => $retried,
+				// Can this request create / overwrite a PHP file at all? Separates "the host refuses PHP
+				// writes from a web request" from a package or unzip problem.
+				'php_write_test'      => self::php_write_probe(),
+				// Code on the site that hooks into the installer (a host's must-use plugin can veto it).
+				'installer_hooks'     => self::hook_names( array( 'upgrader_pre_install', 'upgrader_source_selection', 'upgrader_post_install', 'upgrader_pre_download', 'unzip_file', 'pre_unzip_file' ) ),
 			);
 			return new WP_Error( 'upw_ai_theme', 'The theme was not installed, and the installed theme was left as it was. ' . $msg . ' Details: ' . wp_json_encode( $diag ) );
 		}

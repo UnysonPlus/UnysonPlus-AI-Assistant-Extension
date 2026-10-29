@@ -11,7 +11,7 @@ $manifest['description'] = __(
 	'fw'
 );
 
-$manifest['version']     = '1.0.45';
+$manifest['version']     = '1.0.49';
 $manifest['display']     = true;
 $manifest['standalone']  = true;
 
@@ -47,6 +47,28 @@ $manifest['requires_wp']  = '6.9'; // Abilities API (wp_register_ability) landed
 /**
  * Changelog
  * ---------
+ * 1.0.49 - Actions that wait for an administrator's click. Some managed hosts refuse to create
+ *          .php files from a REST request (how an AI app reaches the site) while allowing it
+ *          from wp-admin. On such a host, installing a theme, creating a child theme or writing
+ *          a PHP file in it is QUEUED instead of failing: the verified package or content is
+ *          kept, the AI is told it is waiting, and wp-admin shows the next administrator a
+ *          notice naming each action with Install and Discard. Install runs the same code from
+ *          that wp-admin request; the AI reads the outcome (install-theme with the upload_id).
+ *          Also: short-links-import clear_prefix (1.0.48), and the PHP-write probe and
+ *          installer-hook list in install-theme's failure details (1.0.47).
+ *
+ * 1.0.46 - Deploying a site with no manual uploads (roadmap 28-30). install-theme takes the
+ *          .zip as base64 pieces (upload_id / chunk_index / chunk_count, assembled under
+ *          uploads/unysonplus/tmp and reused by the confirm call), and a GitHub tag archive
+ *          ("<Repo>-<tag>") updates the installed theme of the same name instead of
+ *          installing a copy. create-child-theme writes plain files (the WP_Filesystem layer
+ *          failed on a managed host) and names the file and reason on failure. upload-media
+ *          keep_path stores a file at an exact uploads path. New: content-upsert (any public
+ *          post type, by slug, with terms, featured image, meta and Unyson+ post options),
+ *          user-upsert (never a site-managing role), menu-set (nested items, locations) and
+ *          short-links-import (through the Short Links importer). All batched, idempotent and
+ *          undoable; the undo log now also restores users and removes imported short links.
+ *
  * 1.0.42 - Files and site structure for an AI without a terminal. New abilities: upload-media
  *          (an image, SVG, video or PDF into the Media Library from a URL or base64 data, with
  *          title, alt and caption; SVGs sanitised; undo deletes the upload), child-theme-files
