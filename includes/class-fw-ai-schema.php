@@ -501,6 +501,29 @@ class FW_AI_Schema {
 		if ( in_array( $type, array( 'text', 'textarea', 'wp-editor', 'short-text' ), true ) && ! is_scalar( $value ) && $value !== null ) {
 			return 'expected a string.';
 		}
+		// Numbers and sliders: keep to the field's min / max / step, or the editor refuses to save the
+		// element later ("Please fix the highlighted field") over a value it cannot show.
+		if ( in_array( $type, array( 'number', 'slider', 'short-slider' ), true ) && is_numeric( $value ) ) {
+			$props = isset( $opt['properties'] ) && is_array( $opt['properties'] ) ? $opt['properties'] : array();
+			$min   = $props['min'] ?? $opt['min'] ?? null;
+			$max   = $props['max'] ?? $opt['max'] ?? null;
+			$step  = $props['step'] ?? $opt['step'] ?? null;
+			$v     = (float) $value;
+			if ( is_numeric( $min ) && $v < (float) $min ) {
+				return sprintf( '%s is below the minimum %s.', $value, $min );
+			}
+			if ( is_numeric( $max ) && $v > (float) $max ) {
+				return sprintf( '%s is above the maximum %s.', $value, $max );
+			}
+			if ( is_numeric( $step ) && (float) $step > 0 ) {
+				$base  = is_numeric( $min ) ? (float) $min : 0.0;
+				$steps = ( $v - $base ) / (float) $step;
+				if ( abs( $steps - round( $steps ) ) > 1e-6 ) {
+					$near = $base + round( $steps ) * (float) $step;
+					return sprintf( '%s is not on the field\'s %s step; use %s.', $value, $step, rtrim( rtrim( number_format( $near, 6, '.', '' ), '0' ), '.' ) );
+				}
+			}
+		}
 		// Structured values (unit inputs, colours, spacing, multi-pickers…): a scalar where
 		// the default is an array is the one shape mistake worth catching.
 		if ( isset( $opt['value'] ) && is_array( $opt['value'] ) && $opt['value'] && is_scalar( $value ) && $value !== '' ) {
