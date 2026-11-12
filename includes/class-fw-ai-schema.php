@@ -639,6 +639,36 @@ class FW_AI_Schema {
 		$type  = (string) ( $opt['type'] ?? '' );
 		$inner = self::inner_leaves( $opt );
 
+		// Spacing slots hold Bootstrap utility classes (pt-5, m-md-3), never a size: an AI once sent
+		// { "value": "100", "unit": "px" } for padding.top, which saved and printed PHP warnings on the page.
+		if ( $type === 'spacing' && is_array( $value ) ) {
+			$layers = array( '' => $value );
+			foreach ( array( 'md', 'lg' ) as $dev ) {
+				if ( isset( $value['advanced'][ $dev ] ) && is_array( $value['advanced'][ $dev ] ) ) {
+					$layers[ ".advanced.$dev" ] = $value['advanced'][ $dev ];
+				}
+			}
+			foreach ( $layers as $at => $layer ) {
+				foreach ( array( 'margin', 'padding' ) as $section ) {
+					if ( empty( $layer[ $section ] ) || ! is_array( $layer[ $section ] ) ) {
+						continue;
+					}
+					foreach ( $layer[ $section ] as $slot => $v ) {
+						if ( ! is_string( $v ) ) {
+							$errors[] = "{$path}{$at}.{$section}.{$slot}: a spacing slot takes a utility class name such as \"" . ( $section === 'margin' ? 'mb' : 'pt' ) . '-5" (scale 0-5; 5 is about 48px), or "" for none, not a size. For an exact size use the element\'s Custom CSS.';
+						}
+					}
+				}
+			}
+			return;
+		}
+
+		// A typography value's colour is a plain colour string (an AI once saved { predefined: "Espresso" } there and
+		// every page printed "Array to string conversion").
+		if ( strpos( $type, 'typography' ) === 0 && is_array( $value ) && isset( $value['color'] ) && ! is_string( $value['color'] ) ) {
+			$errors[] = "{$path}.color: a typography colour is a plain colour string such as \"#3b2a20\" (a theme colour's hex), not a preset object.";
+		}
+
 		if ( $inner && self::is_list_type( $type ) ) {
 			if ( ! is_array( $value ) || ( $value && array_keys( $value ) !== range( 0, count( $value ) - 1 ) ) ) {
 				$errors[] = "$path: expected a list of objects with keys " . implode( ', ', array_keys( $inner ) ) . '.';

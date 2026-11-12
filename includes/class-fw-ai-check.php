@@ -209,6 +209,11 @@ class FW_AI_Check {
 		if ( ! $spacer && $text === '' && $media === 0 && $markup === 0 ) {
 			$issues[] = self::issue( 'error', $path, $tag, 'Renders nothing visible — fill its content or remove it.' );
 		}
+		// A card that has a title option but shows only its icon or picture: the words were left out (seen on an AI-built
+		// page: three icon boxes, icons only). An icon-only box is rare enough that it has to be asked for.
+		if ( ! $spacer && $text === '' && $media > 0 && isset( $leaves['title'] ) && in_array( $leaves['title'][0]['type'], self::TEXT_TYPES, true ) ) {
+			$issues[] = self::issue( 'warning', $path, $tag, sprintf( 'The %s shows only its icon or picture, with no words: set its title (and content), unless an icon-only box was asked for.', str_replace( '_', ' ', $tag ) ) );
+		}
 		foreach ( $defaults as $id => $default ) {
 			if ( stripos( $text, $default ) !== false ) {
 				$issues[] = self::issue( 'warning', $path, $tag, sprintf( '%s still shows its default text "%s".', ucfirst( str_replace( '_', ' ', $id ) ), $default ) );
