@@ -1147,9 +1147,92 @@
 		}
 	}
 
+	/* ------------------------------------------------------------------ *
+	 * AI for layout (7e): proposals for one section, previewed by the Live Editor before anything is kept.
+	 * The site writes the brief and checks the answer; the text goes through the same AI as a chat message.
+	 * ------------------------------------------------------------------ */
+
+	function layoutCall( body ) {
+		return Promise.resolve( request( cfg.layoutUrl, 'POST', $.extend( { post_id: cfg.postId }, body ) ) );
+	}
+
+	/** Send one brief to the connected AI and resolve with its raw text answer. */
+	function askText( brief, status ) {
+		if ( cfg.backend === 'browser' ) {
+			var found = local ? Promise.resolve( local ) : findLocal().then( function ( f ) { local = f; return f; } );
+			return found.then( function ( f ) {
+				if ( ! f.claude ) {
+					status( l.localThinking || 'Thinking' );
+					return chat( [ { role: 'system', content: brief.system }, { role: 'user', content: brief.user } ], 'json' );
+				}
+				status( l.claudeWorking || 'Claude is working' );
+				var sess = '';
+				return Promise.resolve( request( cfg.local.startUrl, 'POST', {
+					mode: 'page', post_id: cfg.postId, tree: host.getTree(), title: pageTitle(), context: '', focus: '',
+					agent: true, message: brief.message, history: []
+				} ) ).then( function ( res ) {
+					sess = res.session;
+					return fetchJson( f.base + '/local-ai/agent', {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify( { mcp: res.mcp, prompt: res.prompt, async: true, request_id: sess } )
+					}, 60000 );
+				} ).then( function ( r ) {
+					return ( r && r.job ) ? waitAgent( f.base, r.job ).then( function ( o ) { return o.reply || ''; } ) : ( ( r && r.reply ) || '' );
+				} ).then( function ( reply ) {
+					// Close the session (its temporary password); nothing it did is applied.
+					request( cfg.local.finishUrl, 'POST', { session: sess, reply: '', error: '' } );
+					return reply;
+				} );
+			} );
+		}
+		// The site's own AI (or the development host's agent): the chat endpoint, polled while it runs.
+		status( l.thinking || 'Thinking' );
+		return new Promise( function ( resolve, reject ) {
+			function check( res ) {
+				if ( res && res.status === 'running' && res.session ) {
+					setTimeout( function () {
+						request( cfg.pollUrl + ( cfg.pollUrl.indexOf( '?' ) > -1 ? '&' : '?' ) + 'session=' + encodeURIComponent( res.session ), 'GET' ).done( check ).fail( reject );
+					}, 2000 );
+					return;
+				}
+				if ( res && res.status === 'error' ) {
+					reject( new Error( res.reply || res.error || 'The AI could not answer.' ) );
+					return;
+				}
+				resolve( ( res && res.reply ) || '' );
+			}
+			request( cfg.runUrl, 'POST', {
+				post_id: cfg.postId, message: brief.message, tree: host.getTree(), history: [], title: pageTitle(), context: '', focus: ''
+			} ).done( check ).fail( reject );
+		} );
+	}
+
+	/**
+	 * kind: 'responsive' | 'variations'; node: the section; parent: its parent's type ('' at the root).
+	 * Resolves { proposals: [ { label, why, node } ], dropped: [ reasons ] }; rejects with an Error.
+	 */
+	function proposeLayout( kind, node, parent, onStatus ) {
+		var status = typeof onStatus === 'function' ? onStatus : function () {};
+		if ( ! cfg.backend ) {
+			return Promise.reject( new Error( l.notReady || 'The AI Assistant is not connected to an AI yet.' ) );
+		}
+		var count = kind === 'responsive' ? 2 : 3;
+		status( l.layoutBrief || 'Reading the section' );
+		return layoutCall( { phase: 'brief', kind: kind, node: node, count: count } ).then( function ( brief ) {
+			return askText( brief, status );
+		} ).then( function ( raw ) {
+			status( l.layoutCheck || 'Checking the proposals' );
+			return layoutCall( { phase: 'parse', kind: kind, node: node, parent: parent || '', raw: String( raw || '' ) } );
+		} ).catch( function ( e ) {
+			throw new Error( errText( e ) );
+		} );
+	}
+
 	// For the AI Assistant settings screen: its live status uses the same check the panel makes, and its
 	// "Open the AI Assistant" button opens this panel.
 	window.upwAiAssistant = {
+		proposeLayout: proposeLayout,
 		backend: cfg.backend,
 		findLocal: findLocal,
 		open: function () {

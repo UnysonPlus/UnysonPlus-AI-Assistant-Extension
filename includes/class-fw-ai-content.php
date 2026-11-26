@@ -161,7 +161,18 @@ class FW_AI_Content {
 					return new WP_Error( 'upw_ai_content', 'Item ' . ( $n + 1 ) . ': "' . $tax . '" is not a taxonomy of ' . $type . '.' );
 				}
 			}
-			$plan[] = array( $it, $type, $slug, $pto->hierarchical ? get_page_by_path( $slug, OBJECT, $type ) : get_page_by_path( $slug, OBJECT, $type ) );
+			// get_page_by_path() also searches attachments, so an image whose slug matches would be
+			// "updated" into a post (its media record lost). Only a match of the same type counts.
+			$existing = get_page_by_path( $slug, OBJECT, $type );
+			if ( $existing && $existing->post_type !== $type ) {
+				$same = get_posts( array( 'post_type' => $type, 'name' => $slug, 'post_status' => 'any', 'numberposts' => 1, 'suppress_filters' => true ) );
+				if ( ! $same ) {
+					// WordPress would save the new post as "<slug>-2", so a second run could not find it again.
+					return new WP_Error( 'upw_ai_content', 'Item ' . ( $n + 1 ) . ': the slug "' . $slug . '" is already used by ' . ( 'attachment' === $existing->post_type ? 'a Media Library item' : 'a ' . $existing->post_type ) . ' (id ' . (int) $existing->ID . ', "' . $existing->post_title . '"). Choose another slug.' );
+				}
+				$existing = $same[0];
+			}
+			$plan[] = array( $it, $type, $slug, $existing );
 		}
 
 		// One undo for the batch: existing posts' fields, meta, terms and thumbnails as they are now.

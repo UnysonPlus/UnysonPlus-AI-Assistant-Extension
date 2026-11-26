@@ -376,6 +376,7 @@ class FW_AI_Panel {
 			'backendLabel' => self::backend_label( $backend ),
 			'runUrl'   => rest_url( FW_AI_MCP::REST_NS . ( $host === 'site' ? '/site/run' : '/panel/run' ) ),
 			'pollUrl'  => rest_url( FW_AI_MCP::REST_NS . '/panel/status' ),
+			'layoutUrl' => rest_url( FW_AI_MCP::REST_NS . '/panel/layout' ),
 			'local'    => array(
 				'url'       => self::browser_url(),
 				'model'     => (string) get_option( self::OPTION_BROWSER_MODEL, '' ),

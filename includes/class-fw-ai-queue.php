@@ -80,21 +80,26 @@ class FW_AI_Queue {
 	/**
 	 * Queue an action.
 	 *
-	 * @param string $kind    install_theme | child_theme | theme_file
+	 * @param string $kind    install_theme | install_plugin | child_theme | theme_file
 	 * @param string $label   What the person is asked to approve, in plain words.
 	 * @param array  $payload Arguments for the run (a 'file' is deleted when the job ends).
 	 * @param string $key     The caller's id for it (e.g. the upload_id), to read the status later.
 	 * @param string $cap     Capability the approving user needs.
+	 * @param string $target  What the job changes (e.g. "theme:payforituk"). A newer job for the same
+	 *                        target replaces an older one still waiting, so wp-admin only ever offers
+	 *                        the latest version of a theme or plugin, never a pile of superseded ones.
 	 * @return array The job.
 	 */
-	public static function add( $kind, $label, array $payload, $key, $cap ) {
-		$list = self::all();
+	public static function add( $kind, $label, array $payload, $key, $cap, $target = '' ) {
+		$list   = self::all();
+		$target = (string) $target;
 		foreach ( $list as $id => $j ) {
-			if ( $j['key'] === $key && $j['status'] === 'queued' ) {
+			$same_target = $target !== '' && ( $j['target'] ?? '' ) === $target;
+			if ( ( $j['key'] === $key || $same_target ) && $j['status'] === 'queued' ) {
 				if ( ! empty( $j['payload']['file'] ) && $j['payload']['file'] !== ( $payload['file'] ?? '' ) && is_file( $j['payload']['file'] ) ) {
 					wp_delete_file( $j['payload']['file'] );
 				}
-				unset( $list[ $id ] ); // a re-send replaces the waiting one
+				unset( $list[ $id ] ); // a re-send, or a newer package for the same target, replaces the waiting one
 			}
 		}
 		$id          = wp_generate_password( 12, false );
@@ -104,6 +109,7 @@ class FW_AI_Queue {
 			'label'   => $label,
 			'payload' => $payload,
 			'key'     => (string) $key,
+			'target'  => $target,
 			'cap'     => $cap,
 			'user'    => get_current_user_id(),
 			'created' => time(),
@@ -234,6 +240,9 @@ class FW_AI_Queue {
 		$p = (array) $j['payload'];
 		if ( $j['kind'] === 'install_theme' ) {
 			return FW_AI_Files::install_theme( array( 'queued_package' => (string) $p['file'], 'activate' => ! empty( $p['activate'] ), 'confirm' => true ) );
+		}
+		if ( $j['kind'] === 'install_plugin' ) {
+			return FW_AI_Deploy::install_plugin( array( 'queued_package' => (string) $p['file'], 'confirm' => true ) );
 		}
 		if ( $j['kind'] === 'child_theme' ) {
 			return FW_AI_Theme::create( array( 'name' => (string) $p['name'], 'confirm' => true ) );

@@ -11,7 +11,7 @@ $manifest['description'] = __(
 	'fw'
 );
 
-$manifest['version']     = '1.0.51';
+$manifest['version']     = '1.0.64';
 $manifest['display']     = true;
 $manifest['standalone']  = true;
 
@@ -47,6 +47,29 @@ $manifest['requires_wp']  = '6.9'; // Abilities API (wp_register_ability) landed
 /**
  * Changelog
  * ---------
+ * 1.0.55 - Knowledge, a status box and Try it for the Chat AI channel (Chat → Settings → AI
+ *          assistant). The tab now says whether the assistant can answer and through what (an AI
+ *          provider from Settings → Connectors, or the AI Dev Kit on a local site only), whether
+ *          visitors see the channel, and today's answers against the daily limit; before, with no
+ *          AI connected the channel stayed hidden without a word. Besides the published pages, the
+ *          assistant now answers from "Facts for the assistant" (Markdown), uploaded .md / .txt
+ *          knowledge files (stored as text in the database, up to 20 files / 200 KB each) and the
+ *          business details the site already has (SEO local business address, hours and price
+ *          range, and the Chat contact channels). Facts and files are split at their headings and
+ *          the best-matching sections go with each question (all of them while short). Try it asks
+ *          a test question and lists what the assistant was given. FW_AI_Knowledge; REST
+ *          /visitor/test; knowledge files travel in the Chat JSON export.
+ *
+ * 1.0.52 - Plugins and Kinetic Scenes from the AI, so a site edited live needs no FTP or manual
+ *          upload. install-plugin installs or updates a plugin from a .zip (a url, or base64
+ *          pieces like install-theme) through WordPress's own installer, replacing the installed
+ *          plugin of the same folder as Upload Plugin does; it previews first, keeps an active
+ *          plugin active, and on a host that refuses new code from the AI's request it waits in
+ *          the wp-admin approval notice like a theme (FW_AI_Queue kind install_plugin).
+ *          upload-scene puts a Kinetic Scene's web export into uploads/unysonplus/scenes/<name>/
+ *          (data and media files only, SVGs cleaned, written beside and swapped in, the previous
+ *          folder kept as a backup). See includes/class-fw-ai-deploy.php.
+ *
  * 1.0.49 - Actions that wait for an administrator's click. Some managed hosts refuse to create
  *          .php files from a REST request (how an AI app reaches the site) while allowing it
  *          from wp-admin. On such a host, installing a theme, creating a child theme or writing

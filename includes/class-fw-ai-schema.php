@@ -395,7 +395,9 @@ class FW_AI_Schema {
 		}
 
 		$atts = self::validate_atts( $type, $atts, $path, $errors );
-		if ( $type === 'flexbox' && empty( $atts['unique_id'] ) ) {
+		// Every layout item needs its own id, as the builder gives one: section / column / row /
+		// container CSS (padding, background, colours) is scoped to it and is dropped without it.
+		if ( empty( $atts['unique_id'] ) ) {
 			$atts['unique_id'] = self::unique_id();
 		}
 		$clean = array(

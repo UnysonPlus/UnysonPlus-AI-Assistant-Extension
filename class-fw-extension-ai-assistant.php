@@ -18,6 +18,7 @@
  *   includes/class-fw-ai-check.php     render-check
  *   includes/class-fw-ai-local.php     local command-line agent runner (development hosts)
  *   includes/class-fw-ai-visitor.php   the Chat extension's AI channel for visitors
+ *   includes/class-fw-ai-knowledge.php facts, knowledge files and business details for that channel
  *   includes/class-fw-ai-settings.php  Theme Settings: describe, update, presets, undo
  *   includes/class-fw-ai-build.php     templates + whole-site conversion
  *   includes/class-fw-ai-toolkit.php   fw_ai_register_ability() / fw_ai_snapshot() for other extensions
@@ -64,6 +65,7 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		require_once $this->get_path( '/includes/class-fw-ai-panel.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-check.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-local.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-knowledge.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-visitor.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-settings.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-build.php' );
@@ -81,15 +83,18 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		require_once $this->get_path( '/includes/class-fw-ai-theme.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-extensions.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-files.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-deploy.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-connection.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-content.php' );
 		require_once $this->get_path( '/includes/class-fw-ai-queue.php' );
+		require_once $this->get_path( '/includes/class-fw-ai-layout.php' );
 		FW_AI_Queue::init();
 
 		add_action( 'wp_abilities_api_categories_init', array( 'FW_AI_Abilities', 'register_categories' ) );
 		add_action( 'wp_abilities_api_init', array( 'FW_AI_Abilities', 'register' ) );
 		FW_AI_MCP::init();
 		FW_AI_Panel::init();
+		FW_AI_Layout::init();
 		FW_AI_Visitor::init();
 		FW_AI_Toolkit::init();
 		FW_AI_Context::init();
@@ -102,6 +107,7 @@ class FW_Extension_AI_Assistant extends FW_Extension {
 		add_action( 'fw_ai_assistant_register_abilities', array( 'FW_AI_Translate', 'register' ) );
 		add_action( 'fw_ai_assistant_register_abilities', array( 'FW_AI_Extensions', 'register' ) );
 		FW_AI_Files::init();
+		FW_AI_Deploy::init();
 	}
 
 	/**

@@ -554,7 +554,8 @@ class FW_AI_Files {
 				sprintf( 'PHP file from your AI app: %s %s/%s', $exists ? 'change' : 'create', $ctx['child_theme'], $p['rel'] ),
 				array( 'file' => FW_AI_Queue::keep_file( '', $new ), 'path' => $p['rel'] ),
 				'file:' . $ctx['child_theme'] . '/' . $p['rel'],
-				'edit_themes'
+				'edit_themes',
+				'file:' . $ctx['child_theme'] . '/' . $p['rel']
 			);
 			return $ctx + FW_AI_Queue::status( $job );
 		}
@@ -763,7 +764,7 @@ class FW_AI_Files {
 	 * @param array $in
 	 * @return string|array|WP_Error
 	 */
-	private static function chunked_package( $in ) {
+	public static function chunked_package( $in ) {
 		$uid = (string) ( $in['upload_id'] ?? '' );
 		$dir = self::chunks_dir( $uid );
 		if ( is_wp_error( $dir ) ) {
@@ -916,7 +917,8 @@ class FW_AI_Files {
 				sprintf( 'Theme from your AI app: %s', ucfirst( $what ) ),
 				array( 'file' => FW_AI_Queue::keep_file( $tmp ), 'activate' => ! empty( $in['activate'] ) ),
 				$qkey,
-				'install_themes'
+				'install_themes',
+				$pkg['slug'] !== '' ? 'theme:' . $pkg['slug'] : ''
 			);
 			wp_delete_file( $tmp );
 			if ( $uid !== '' ) {
@@ -1094,9 +1096,16 @@ class FW_AI_Files {
 		}
 		$undo = fw_ai_snapshot( array( 'options' => array_keys( $changes ) ), 'unysonplus/reading-settings', 'Reading / permalink settings' );
 		foreach ( $changes as $k => $v ) {
+			if ( 'permalink_structure' === $k ) {
+				continue;
+			}
 			update_option( $k, $v );
 		}
 		if ( isset( $changes['permalink_structure'] ) ) {
+			// Through $wp_rewrite, not update_option(): the rewrite object keeps the structure it read at
+			// start-up, so a flush right after update_option() rebuilt the OLD rules and the new addresses 404'd.
+			global $wp_rewrite;
+			$wp_rewrite->set_permalink_structure( $changes['permalink_structure'] );
 			flush_rewrite_rules( false );
 		}
 		return array( 'ok' => true, 'current' => self::reading_now(), 'undo_revision_id' => $undo );

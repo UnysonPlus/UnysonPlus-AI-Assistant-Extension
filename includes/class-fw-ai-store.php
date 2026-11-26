@@ -222,21 +222,69 @@ class FW_AI_Store {
 	 * @return int|WP_Error Meta id of the new revision.
 	 */
 	public static function snapshot( $post_id, $ability, $note = '' ) {
-		$row = array(
+		$active = self::is_builder_active( $post_id );
+		$row    = array(
 			'time'    => time(),
 			'user'    => get_current_user_id(),
 			'ability' => (string) $ability,
 			'note'    => wp_html_excerpt( (string) $note, 200, '…' ),
-			'active'  => self::is_builder_active( $post_id ),
+			'active'  => $active,
 			'json'    => wp_json_encode( self::get_tree( $post_id ) ),
-			'content' => (string) get_post_field( 'post_content', $post_id, 'raw' ),
 		);
+		// The post content is only needed to put back a page that was not a builder page (restore()
+		// rebuilds a builder page's content from the tree). On a builder page it is the shortcode text
+		// of the whole tree, often many times larger than the tree itself, so it is not stored.
+		if ( ! $active ) {
+			$row['content'] = (string) get_post_field( 'post_content', $post_id, 'raw' );
+		}
 		$id = add_post_meta( $post_id, self::META_REVISION, wp_slash( $row ) );
 		if ( ! $id ) {
 			return new WP_Error( 'upw_ai_snapshot_failed', 'Could not save a revision, so the change was not made.' );
 		}
 		self::prune( $post_id );
 		return (int) $id;
+	}
+
+	/**
+	 * Fill a post's meta cache WITHOUT its AI revisions. WordPress loads every meta row of a post into
+	 * memory on the first get_post_meta(), and each revision is a full copy of the page (builder JSON +
+	 * post_content), so a page with large elements (inline Kinetic Scenes) and 20 revisions ran past the
+	 * PHP memory limit on every read: writes, undo and even the page itself failed. Revisions are only
+	 * ever read one at a time by meta id (get_metadata_by_mid), so they never need to be in the cache.
+	 *
+	 * @param mixed $check
+	 * @param int[] $object_ids
+	 * @return mixed
+	 */
+	public static function meta_cache_without_revisions( $check, $object_ids ) {
+		if ( null !== $check ) {
+			return $check;
+		}
+		global $wpdb;
+		$ids = array_filter( array_map( 'intval', (array) $object_ids ) );
+		if ( ! $ids ) {
+			return $check;
+		}
+		$cached = wp_cache_get_multiple( $ids, 'post_meta' );
+		$need   = array();
+		foreach ( $ids as $id ) {
+			if ( false === $cached[ $id ] ) {
+				$need[] = $id;
+			}
+		}
+		if ( $need ) {
+			$rows = $wpdb->get_results( $wpdb->prepare(
+				'SELECT post_id, meta_key, meta_value FROM ' . $wpdb->postmeta . ' WHERE post_id IN (' . implode( ',', $need ) . ') AND meta_key <> %s ORDER BY meta_id ASC',
+				self::META_REVISION
+			), ARRAY_A );
+			$fill = array_fill_keys( $need, array() );
+			foreach ( (array) $rows as $r ) {
+				$fill[ (int) $r['post_id'] ][ $r['meta_key'] ][] = $r['meta_value'];
+			}
+			wp_cache_add_multiple( $fill, 'post_meta' );
+		}
+		// null: core then finds every id cached and returns the cache as usual.
+		return $check;
 	}
 
 	/**
@@ -496,3 +544,5 @@ class FW_AI_Store {
 		return '';
 	}
 }
+
+add_filter( 'update_post_metadata_cache', array( 'FW_AI_Store', 'meta_cache_without_revisions' ), 10, 2 );
